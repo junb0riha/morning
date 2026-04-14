@@ -22,6 +22,8 @@ now_kst = now_utc + timedelta(hours=9)
 hour_kst = now_kst.hour
 IS_MORNING = hour_kst < 12
 MONTH_START = now_kst.date().replace(day=1)
+DIVIDER = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+
 print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')} / {'오전 세션' if IS_MORNING else '오후 세션'}")
 
 def get_market_data():
@@ -89,36 +91,59 @@ def format_market_data(data):
         month_str = f"월간 {arrow(month_chg)}{abs(month_chg):.2f}%" if month_chg is not None else "월간 -"
         return f"{name}: {price_str}  {day_str}  ({month_str}, {month_start_str} 比)"
 
-    sections = [
-        ("🇺🇸 미국 지수", ["S&P500", "나스닥", "다우", "필라델피아반도체"]),
-        ("🇰🇷 한국 지수", ["코스피", "코스닥"]),
-        ("매크로 지표", ["원달러", "WTI유가", "금"]),
-        ("가상자산", ["비트코인", "이더리움"]),
-    ]
-
     lines = []
-    for section, names in sections:
-        if names[0] in data:
-            date_str = data[names[0]]["date"].strftime("%m/%d")
-            lines.append(f"*{section}* ({date_str} 기준)")
-        else:
-            lines.append(f"*{section}*")
-        for name in names:
-            if name in data:
-                lines.append(fmt(name, data[name]))
-        lines.append("")
-    return "\n".join(lines).strip()
+
+    # 미국 지수
+    us_names = ["S&P500", "나스닥", "다우", "필라델피아반도체"]
+    if us_names[0] in data:
+        date_str = data[us_names[0]]["date"].strftime("%m/%d")
+        lines.append(f"🇺🇸 미국 지수 ({date_str} 기준)")
+    for name in us_names:
+        if name in data:
+            lines.append(fmt(name, data[name]))
+    lines.append("")
+
+    # 한국 지수
+    kr_names = ["코스피", "코스닥"]
+    if kr_names[0] in data:
+        date_str = data[kr_names[0]]["date"].strftime("%m/%d")
+        lines.append(f"🇰🇷 한국 지수 ({date_str} 기준)")
+    for name in kr_names:
+        if name in data:
+            lines.append(fmt(name, data[name]))
+    lines.append("")
+
+    # 매크로 지표
+    macro_names = ["원달러", "WTI유가", "금"]
+    if macro_names[0] in data:
+        date_str = data[macro_names[0]]["date"].strftime("%m/%d")
+        lines.append(f"▪ 매크로 지표 ({date_str} 기준)")
+    for name in macro_names:
+        if name in data:
+            lines.append(fmt(name, data[name]))
+    lines.append("")
+
+    # 가상자산
+    crypto_names = ["비트코인", "이더리움"]
+    if crypto_names[0] in data:
+        date_str = data[crypto_names[0]]["date"].strftime("%m/%d")
+        lines.append(f"▪ 가상자산 ({date_str} 기준)")
+    for name in crypto_names:
+        if name in data:
+            lines.append(fmt(name, data[name]))
+
+    return "\n".join(lines)
 
 def build_prompt(articles_text, market, session):
     if market == "us":
         return f"""당신은 한국의 시니어 매크로 애널리스트입니다.
 
 [예시 문체]
-"미국 증시 상승 마감. 미-이란 협상 기대감 부상으로 투심 개선. 국제유가 장중 배럴당 100달러 돌파 후 협상 기대감에 상승폭 축소 마감. 나스닥 기술주 중심 매수세 유입, 연준 금리 동결 가능성 부각되며 위험자산 선호 심리 강화."
+"미국 증시 상승 마감. 미-이란 핵협상 재개 기대감으로 투심 회복. WTI 유가 장중 배럴당 103달러 돌파 후 협상 기대감에 상승폭 축소. 연준 금리 동결 전망 유지 속 나스닥 기술주 중심 매수세 유입, 위험자산 선호 심리 강화."
 
 [작성 규칙]
 - 반드시 한국어로만 작성
-- 80~100자 내외 (간결하게)
+- 150자 이상 170자 이하 (공백 포함, 반드시 준수)
 - 문장 끝은 반드시 명사형 종결 (~했다/~됩니다 절대 금지)
 - 개별 종목 언급 금지
 - 아래 순서로 서술:
@@ -138,7 +163,7 @@ def build_prompt(articles_text, market, session):
 
 [작성 규칙]
 - 반드시 한국어로만 작성
-- 80~100자 내외 (간결하게)
+- 150자 이상 170자 이하 (공백 포함, 반드시 준수)
 - 문장 끝은 반드시 명사형 종결 (~했다/~됩니다 절대 금지)
 - 개별 종목 언급 금지
 - 아래 순서로 서술:
@@ -314,20 +339,17 @@ def send_email(subject, body):
         msg['From'] = EMAIL_SENDER
         msg['To'] = EMAIL_RECEIVER
 
-        # 텍스트 버전
-        text_part = MIMEText(body.replace('*', ''), 'plain', 'utf-8')
+        clean_body = body.replace('*', '')
+        text_part = MIMEText(clean_body, 'plain', 'utf-8')
 
-        # HTML 버전 (보기 좋게)
-        html_body = body.replace('*', '').replace('\n', '<br>')
         html = f"""
-        <html><body>
-        <div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.8; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <pre style="font-family: Arial, sans-serif; white-space: pre-wrap;">{body.replace('*', '')}</pre>
-        </div>
-        </body></html>
-        """
+<html><body>
+<div style="font-family: 'Malgun Gothic', Arial, sans-serif; font-size: 14px; line-height: 2.0; max-width: 620px; margin: 0 auto; padding: 24px; color: #1a1a1a;">
+<pre style="font-family: 'Malgun Gothic', Arial, sans-serif; font-size: 14px; line-height: 2.0; white-space: pre-wrap; word-break: keep-all;">{clean_body}</pre>
+</div>
+</body></html>
+"""
         html_part = MIMEText(html, 'html', 'utf-8')
-
         msg.attach(text_part)
         msg.attach(html_part)
 
@@ -341,7 +363,6 @@ def send_email(subject, body):
 if __name__ == "__main__":
     session_label = "오전 브리프" if IS_MORNING else "오후 브리프"
     date_str = now_kst.strftime('%Y년 %m월 %d일 %H:%M')
-    header = f"*{session_label} — {date_str} KST*\n"
 
     print("시장 데이터 수집 중...")
     market_data = get_market_data()
@@ -353,15 +374,20 @@ if __name__ == "__main__":
     print("한국 뉴스 수집 중...")
     kr_summary = get_kr_news()
 
-    us_block = f"*🇺🇸 미국 증시 시황*\n{us_summary}"
-    kr_block = f"*🇰🇷 한국 증시 시황*\n{kr_summary}"
+    full_message = f"""{session_label} — {date_str} KST
+{DIVIDER}
 
-    full_message = (
-        header + "\n"
-        + market_block + "\n\n"
-        + us_block + "\n\n"
-        + kr_block
-    )
+{market_block}
+
+{DIVIDER}
+🇺🇸 미국 증시 시황
+{DIVIDER}
+{us_summary}
+
+{DIVIDER}
+🇰🇷 한국 증시 시황
+{DIVIDER}
+{kr_summary}"""
 
     send_telegram(full_message)
 
