@@ -11,12 +11,14 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '').strip()
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 
-# 현재 KST 시간 기준으로 발송 세션 판단
 now_utc = datetime.utcnow()
 now_kst = now_utc + timedelta(hours=9)
 hour_kst = now_kst.hour
-IS_MORNING = hour_kst < 12  # 08:30 발송
+IS_MORNING = hour_kst < 12
 print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')} / {'오전 세션' if IS_MORNING else '오후 세션'}")
+
+# 이번달 1일 계산
+MONTH_START = now_kst.date().replace(day=1)
 
 def get_market_data():
     tickers = {
@@ -31,36 +33,66 @@ def get_market_data():
         "비트코인": "BTC-USD",
         "이더리움": "ETH-USD",
     }
+
     results = {}
     for name, symbol in tickers.items():
         try:
             ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="2d")
-            if len(hist) >= 2:
-                prev = hist['Close'].iloc[-2]
-                curr = hist['Close'].iloc[-1]
-                change = ((curr - prev) / prev) * 100
-                results[name] = (curr, change)
-            elif len(hist) == 1:
-                curr = hist['Close'].iloc[-1]
-                results[name] = (curr, 0)
+            hist = ticker.history(period="40d")
+            if len(hist) < 2:
+                continue
+
+            curr = hist['Close'].iloc[-1]
+            curr_date = hist.index[-1].date()
+
+            # 전일 대비
+            prev = hist['Close'].iloc[-2]
+            day_change = ((curr - prev) / prev) * 100
+
+            # 월초 대비 (이번달 1일 이전 마지막 거래일)
+            month_price = None
+            for i in range(len(hist)):
+                d = hist.index[i].date()
+                if d < MONTH_START:
+                    month_price = hist['Close'].iloc[i]
+
+            month_change = ((curr - month_price) / month_price) * 100 if month_price else None
+
+            results[name] = {
+                "price": curr,
+                "date": curr_date,
+                "day_change": day_change,
+                "month_change": month_change,
+                "month_start": MONTH_START,
+            }
         except Exception as e:
             print(f"{name} 데이터 오류: {e}")
+
     return results
 
 def format_market_data(data):
     def arrow(chg):
         return "▲" if chg >= 0 else "▼"
 
-    def fmt(name, val, chg):
+    def fmt(name, d):
+        price = d["price"]
+        day_chg = d["day_change"]
+        month_chg = d["month_change"]
+        month_str = d["month_start"].strftime("%m/%d")
+
         if name == "원달러":
-            return f"{name}: {val:,.1f}원 {arrow(chg)}{abs(chg):.2f}%"
+            price_str = f"{price:,.1f}원"
         elif name in ["WTI유가", "금"]:
-            return f"{name}: ${val:,.2f} {arrow(chg)}{abs(chg):.2f}%"
+            price_str = f"${price:,.2f}"
         elif name in ["비트코인", "이더리움"]:
-            return f"{name}: ${val:,.0f} {arrow(chg)}{abs(chg):.2f}%"
+            price_str = f"${price:,.0f}"
         else:
-            return f"{name}: {val:,.2f} {arrow(chg)}{abs(chg):.2f}%"
+            price_str = f"{price:,.2f}"
+
+        day_str = f"{arrow(day_chg)}{abs(day_chg):.2f}%"
+        month_str_val = f"월간 {arrow(month_chg)}{abs(month_chg):.2f}%" if month_chg is not None else "월간 -"
+
+        return f"{name}: {price_str} {day_str}  ({month_str_val}, {month_str} 比)"
 
     sections = {
         "📊 *미국 지수*": ["S&P500", "나스닥", "다우"],
@@ -71,12 +103,17 @@ def format_market_data(data):
 
     lines = []
     for section, names in sections.items():
-        lines.append(section)
+        if names[0] in data:
+            date_str = data[names[0]]["date"].strftime("%m/%d")
+            lines.append(f"{section} ({date_str} 기준)")
+        else:
+            lines.append(section)
         for name in names:
             if name in data:
-                val, chg = data[name]
-                lines.append(fmt(name, val, chg))
-    return "\n".join(lines)
+                lines.append(fmt(name, data[name]))
+        lines.append("")
+
+    return "\n".join(lines).strip()
 
 def build_prompt(articles_text, market, session):
     if market == "us":
@@ -99,11 +136,7 @@ def build_prompt(articles_text, market, session):
 뉴스:
 {articles_text}"""
     else:
-        if session == "morning":
-            time_context = "전일 장 마감 이후 기사 기준"
-        else:
-            time_context = "당일 오후 12시 이후 기사 기준"
-
+        time_context = "전일 장 마감 이후 기사 기준" if session == "morning" else "당일 오후 12시 이후 기사 기준"
         return f"""당신은 한국의 시니어 매크로 애널리스트입니다. ({time_context})
 
 [예시 문체]
@@ -209,7 +242,6 @@ def summarize(articles_text, market, session):
     return "요약 실패"
 
 def get_us_news():
-    # 구글 뉴스 RSS - 최신 미국 증시 기사
     rss_urls = [
         "https://news.google.com/rss/search?q=US+stock+market+NYSE+Nasdaq+S%26P500&hl=en-US&gl=US&ceid=US:en",
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US",
@@ -246,7 +278,6 @@ def get_us_news():
     return summarize(articles_text, "us", session)
 
 def get_kr_news():
-    # 오전: 전일 마감 이후 기사 / 오후: 당일 낮 12시 이후 기사
     if IS_MORNING:
         query = "코스피 코스닥 증시 마감"
     else:
