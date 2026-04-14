@@ -16,7 +16,7 @@ def summarize_with_gemini(articles_text, market):
         print("GEMINI_API_KEY 없음!")
         return "요약 실패 (API 키 없음)"
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={GEMINI_API_KEY}"
         if market == "us":
             prompt = f"""다음은 미국 뉴욕 증시 관련 뉴스들입니다.
 투자자 관점에서 증시 흐름(상승/하락/보합), 주요 원인, 핵심 이슈를 100자 이내로 한국어로 요약해주세요.
