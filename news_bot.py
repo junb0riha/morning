@@ -2,21 +2,21 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+import time
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '').strip()
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
 NEWS_API_KEY = os.environ.get('NEWS_API_KEY', '').strip()
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 
+print(f"OPENAI_API_KEY 길이: {len(OPENAI_API_KEY)}")
 print(f"GEMINI_API_KEY 길이: {len(GEMINI_API_KEY)}")
-print(f"TELEGRAM_TOKEN 길이: {len(TELEGRAM_TOKEN)}")
 
-def summarize_with_gemini(articles_text, market):
-    if not GEMINI_API_KEY:
-        print("GEMINI_API_KEY 없음!")
-        return "요약 실패 (API 키 없음)"
+def summarize_with_gpt(articles_text, market):
+    if not OPENAI_API_KEY:
+        return None
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={GEMINI_API_KEY}"
         if market == "us":
             prompt = f"""다음은 미국 뉴욕 증시 관련 뉴스들입니다.
 투자자 관점에서 증시 흐름(상승/하락/보합), 주요 원인, 핵심 이슈를 100자 이내로 한국어로 요약해주세요.
@@ -32,14 +32,71 @@ def summarize_with_gemini(articles_text, market):
 뉴스:
 {articles_text}"""
 
+        res = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 200
+            }
+        )
+        data = res.json()
+        print(f"GPT 응답: {data}")
+        if 'choices' in data:
+            return data['choices'][0]['message']['content'].strip()
+        return None
+    except Exception as e:
+        print(f"GPT 오류: {e}")
+        return None
+
+def summarize_with_gemini(articles_text, market):
+    if not GEMINI_API_KEY:
+        return None
+    try:
+        if market == "us":
+            prompt = f"""다음은 미국 뉴욕 증시 관련 뉴스들입니다.
+투자자 관점에서 증시 흐름(상승/하락/보합), 주요 원인, 핵심 이슈를 100자 이내로 한국어로 요약해주세요.
+요약문만 출력하세요.
+
+뉴스:
+{articles_text}"""
+        else:
+            prompt = f"""다음은 한국 증시 관련 뉴스들입니다.
+투자자 관점에서 증시 흐름(상승/하락/보합), 주요 원인, 핵심 이슈를 100자 이내로 한국어로 요약해주세요.
+요약문만 출력하세요.
+
+뉴스:
+{articles_text}"""
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         res = requests.post(url, json={
             "contents": [{"parts": [{"text": prompt}]}]
         })
-        print(f"Gemini 응답: {res.json()}")
-        return res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+        data = res.json()
+        print(f"Gemini 응답: {data}")
+        if 'candidates' in data:
+            return data['candidates'][0]['content']['parts'][0]['text'].strip()
+        return None
     except Exception as e:
         print(f"Gemini 오류: {e}")
-        return "요약 실패"
+        return None
+
+def summarize(articles_text, market):
+    print("GPT로 요약 시도...")
+    result = summarize_with_gpt(articles_text, market)
+    if result:
+        print("GPT 요약 성공!")
+        return result
+    print("GPT 실패, Gemini로 시도...")
+    result = summarize_with_gemini(articles_text, market)
+    if result:
+        print("Gemini 요약 성공!")
+        return result
+    return "요약 실패"
 
 def get_us_news():
     rss_urls = [
@@ -75,12 +132,11 @@ def get_us_news():
 
     articles_text = "\n".join(articles[:5])
     print(f"미국 뉴스 수집: {len(articles)}건")
-    summary = summarize_with_gemini(articles_text, "us")
+    summary = summarize(articles_text, "us")
     return f"🇺🇸 *미국 증시 (전일)*\n{summary}"
 
 def get_kr_news():
     rss_urls = [
-        "https://www.yonhapnews.co.kr/rss/economy.xml",
         "https://www.yna.co.kr/rss/economy.xml",
         "https://news.kbs.co.kr/rss/rss_economy.xml",
     ]
@@ -106,7 +162,7 @@ def get_kr_news():
 
     articles_text = "\n".join(articles[:5])
     print(f"한국 뉴스 수집: {len(articles)}건")
-    summary = summarize_with_gemini(articles_text, "kr")
+    summary = summarize(articles_text, "kr")
     return f"🇰🇷 *한국 증시 (당일)*\n{summary}"
 
 def send_telegram(message):
