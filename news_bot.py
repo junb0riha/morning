@@ -52,7 +52,6 @@ def get_market_data():
             prev = hist['Close'].iloc[-2]
             day_change = ((curr - prev) / prev) * 100
 
-            # 지난달 마지막 영업일 기준 월간 수익률
             month_price = None
             for i in range(len(hist) - 1, -1, -1):
                 d = hist.index[i].date()
@@ -95,7 +94,6 @@ def format_market_data(data):
 
     lines = []
 
-    # 미국 지수
     us_names = ["S&P500", "나스닥", "다우", "필라델피아반도체"]
     if us_names[0] in data:
         date_str = data[us_names[0]]["date"].strftime("%m/%d")
@@ -105,7 +103,6 @@ def format_market_data(data):
             lines.append(fmt(name, data[name]))
     lines.append("")
 
-    # 한국 지수
     kr_names = ["코스피", "코스닥"]
     if kr_names[0] in data:
         date_str = data[kr_names[0]]["date"].strftime("%m/%d")
@@ -115,7 +112,6 @@ def format_market_data(data):
             lines.append(fmt(name, data[name]))
     lines.append("")
 
-    # 매크로 지표
     macro_names = ["원달러", "WTI유가", "금"]
     if macro_names[0] in data:
         date_str = data[macro_names[0]]["date"].strftime("%m/%d")
@@ -125,7 +121,6 @@ def format_market_data(data):
             lines.append(fmt(name, data[name]))
     lines.append("")
 
-    # 가상자산
     crypto_names = ["비트코인", "이더리움"]
     if crypto_names[0] in data:
         date_str = data[crypto_names[0]]["date"].strftime("%m/%d")
@@ -148,6 +143,8 @@ def build_prompt(articles_text, market, session):
 - 150자 이상 200자 이하 (공백 포함, 반드시 준수)
 - 문장 끝은 반드시 명사형 종결 (~했다/~됩니다 절대 금지)
 - 개별 종목 언급 금지
+- "가능성이 있다", "~할 수 있다", "~될 수 있다" 등 불확실 추측 표현 절대 금지
+- "개미", "개미투자자" 등 속어/슬랭 표현 절대 금지. 대신 "개인투자자" 사용
 - 아래 순서로 서술:
   1. 증시 방향 + 핵심 원인 한 줄
   2. 주요 매크로 변수 (금리/유가/환율/지정학) 및 수치 포함
@@ -168,6 +165,8 @@ def build_prompt(articles_text, market, session):
 - 150자 이상 200자 이하 (공백 포함, 반드시 준수)
 - 문장 끝은 반드시 명사형 종결 (~했다/~됩니다 절대 금지)
 - 개별 종목 언급 금지
+- "가능성이 있다", "~할 수 있다", "~될 수 있다" 등 불확실 추측 표현 절대 금지
+- "개미", "개미투자자" 등 속어/슬랭 표현 절대 금지. 대신 "개인투자자" 사용
 - 아래 순서로 서술:
   1. 증시 방향 + 핵심 원인 한 줄
   2. 주요 매크로 변수 (환율/외국인수급/유가/금리) 및 수치 포함
@@ -176,6 +175,23 @@ def build_prompt(articles_text, market, session):
 
 뉴스:
 {articles_text}"""
+
+def summarize_with_gemini(articles_text, market, session):
+    if not GEMINI_API_KEY:
+        return None
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        res = requests.post(url, json={
+            "contents": [{"parts": [{"text": build_prompt(articles_text, market, session)}]}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 300}
+        })
+        data = res.json()
+        if 'candidates' in data:
+            return data['candidates'][0]['content']['parts'][0]['text'].strip()
+        return None
+    except Exception as e:
+        print(f"Gemini 오류: {e}")
+        return None
 
 def summarize_with_groq(articles_text, market, session):
     if not GROQ_API_KEY:
@@ -227,32 +243,18 @@ def summarize_with_gpt(articles_text, market, session):
         print(f"GPT 오류: {e}")
         return None
 
-def summarize_with_gemini(articles_text, market, session):
-    if not GEMINI_API_KEY:
-        return None
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        res = requests.post(url, json={
-            "contents": [{"parts": [{"text": build_prompt(articles_text, market, session)}]}],
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 300}
-        })
-        data = res.json()
-        if 'candidates' in data:
-            return data['candidates'][0]['content']['parts'][0]['text'].strip()
-        return None
-    except Exception as e:
-        print(f"Gemini 오류: {e}")
-        return None
-
 def summarize(articles_text, market, session):
     result = summarize_with_gemini(articles_text, market, session)
     if result:
+        print("Gemini 요약 성공!")
         return result
     result = summarize_with_groq(articles_text, market, session)
     if result:
+        print("Groq 요약 성공!")
         return result
     result = summarize_with_gpt(articles_text, market, session)
     if result:
+        print("GPT 요약 성공!")
         return result
     return "요약 실패"
 
