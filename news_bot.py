@@ -22,7 +22,7 @@ now_kst = now_utc + timedelta(hours=9)
 hour_kst = now_kst.hour
 IS_MORNING = hour_kst < 12
 MONTH_START = now_kst.date().replace(day=1)
-DIVIDER = '━━━━━━━'
+DIVIDER = '━━━━━'
 
 print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')} / {'오전 세션' if IS_MORNING else '오후 세션'}")
 
