@@ -9,7 +9,6 @@ NEWS_API_KEY = os.environ.get('NEWS_API_KEY', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 
 print(f"GEMINI_API_KEY 길이: {len(GEMINI_API_KEY)}")
-print(f"TELEGRAM_TOKEN 길이: {len(TELEGRAM_TOKEN)}")
 
 def summarize_with_gemini(articles_text, market):
     if not GEMINI_API_KEY:
@@ -80,13 +79,15 @@ def get_us_news():
 
 def get_kr_news():
     rss_urls = [
-        "https://finance.naver.com/news/news_list.naver?mode=RSS&section=market_now",
-        "https://www.yonhapnewstv.co.kr/category/news/economy/feed/",
+        "https://www.yonhapnews.co.kr/rss/economy.xml",
+        "https://www.yna.co.kr/rss/economy.xml",
+        "https://news.kbs.co.kr/rss/rss_economy.xml",
     ]
     articles = []
     for rss_url in rss_urls:
         try:
             res = requests.get(rss_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+            print(f"한국 RSS 상태코드: {res.status_code} ({rss_url})")
             root = ET.fromstring(res.content)
             for item in root.findall('.//item')[:5]:
                 title = item.findtext('title', '').strip()
@@ -97,6 +98,10 @@ def get_kr_news():
                 break
         except Exception as e:
             print(f"한국 RSS 오류: {e}")
+
+    if not articles:
+        print("한국 뉴스 수집 실패 - 기사 없음")
+        return "🇰🇷 *한국 증시 (당일)*\n뉴스 수집 실패"
 
     articles_text = "\n".join(articles[:5])
     print(f"한국 뉴스 수집: {len(articles)}건")
