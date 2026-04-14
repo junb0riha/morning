@@ -22,7 +22,7 @@ now_kst = now_utc + timedelta(hours=9)
 hour_kst = now_kst.hour
 IS_MORNING = hour_kst < 12
 MONTH_START = now_kst.date().replace(day=1)
-DIVIDER = '━━━━━━━━━━━━'
+DIVIDER = '━━━━━━━'
 
 print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')} / {'오전 세션' if IS_MORNING else '오후 세션'}")
 
@@ -145,7 +145,7 @@ def build_prompt(articles_text, market, session):
 
 [작성 규칙]
 - 반드시 한국어로만 작성
-- 150자 이상 170자 이하 (공백 포함, 반드시 준수)
+- 150자 이상 200자 이하 (공백 포함, 반드시 준수)
 - 문장 끝은 반드시 명사형 종결 (~했다/~됩니다 절대 금지)
 - 개별 종목 언급 금지
 - 아래 순서로 서술:
@@ -165,7 +165,7 @@ def build_prompt(articles_text, market, session):
 
 [작성 규칙]
 - 반드시 한국어로만 작성
-- 150자 이상 170자 이하 (공백 포함, 반드시 준수)
+- 150자 이상 200자 이하 (공백 포함, 반드시 준수)
 - 문장 끝은 반드시 명사형 종결 (~했다/~됩니다 절대 금지)
 - 개별 종목 언급 금지
 - 아래 순서로 서술:
