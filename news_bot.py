@@ -3,6 +3,9 @@ import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import yfinance as yf
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '').strip()
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
@@ -10,21 +13,23 @@ NEWS_API_KEY = os.environ.get('NEWS_API_KEY', '').strip()
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '').strip()
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
+EMAIL_SENDER = os.environ.get('EMAIL_SENDER', '').strip()
+EMAIL_PASSWORD = os.environ.get('EMAIL_PASSWORD', '').strip()
+EMAIL_RECEIVER = 'junbo119.shim@samsung.com'
 
 now_utc = datetime.utcnow()
 now_kst = now_utc + timedelta(hours=9)
 hour_kst = now_kst.hour
 IS_MORNING = hour_kst < 12
-print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')} / {'오전 세션' if IS_MORNING else '오후 세션'}")
-
-# 이번달 1일 계산
 MONTH_START = now_kst.date().replace(day=1)
+print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')} / {'오전 세션' if IS_MORNING else '오후 세션'}")
 
 def get_market_data():
     tickers = {
         "S&P500": "^GSPC",
         "나스닥": "^IXIC",
         "다우": "^DJI",
+        "필라델피아반도체": "^SOX",
         "코스피": "^KS11",
         "코스닥": "^KQ11",
         "원달러": "KRW=X",
@@ -33,7 +38,6 @@ def get_market_data():
         "비트코인": "BTC-USD",
         "이더리움": "ETH-USD",
     }
-
     results = {}
     for name, symbol in tickers.items():
         try:
@@ -41,23 +45,16 @@ def get_market_data():
             hist = ticker.history(period="40d")
             if len(hist) < 2:
                 continue
-
             curr = hist['Close'].iloc[-1]
             curr_date = hist.index[-1].date()
-
-            # 전일 대비
             prev = hist['Close'].iloc[-2]
             day_change = ((curr - prev) / prev) * 100
-
-            # 월초 대비 (이번달 1일 이전 마지막 거래일)
             month_price = None
             for i in range(len(hist)):
                 d = hist.index[i].date()
                 if d < MONTH_START:
                     month_price = hist['Close'].iloc[i]
-
             month_change = ((curr - month_price) / month_price) * 100 if month_price else None
-
             results[name] = {
                 "price": curr,
                 "date": curr_date,
@@ -67,7 +64,6 @@ def get_market_data():
             }
         except Exception as e:
             print(f"{name} 데이터 오류: {e}")
-
     return results
 
 def format_market_data(data):
@@ -78,7 +74,7 @@ def format_market_data(data):
         price = d["price"]
         day_chg = d["day_change"]
         month_chg = d["month_change"]
-        month_str = d["month_start"].strftime("%m/%d")
+        month_start_str = d["month_start"].strftime("%m/%d")
 
         if name == "원달러":
             price_str = f"{price:,.1f}원"
@@ -90,29 +86,27 @@ def format_market_data(data):
             price_str = f"{price:,.2f}"
 
         day_str = f"{arrow(day_chg)}{abs(day_chg):.2f}%"
-        month_str_val = f"월간 {arrow(month_chg)}{abs(month_chg):.2f}%" if month_chg is not None else "월간 -"
+        month_str = f"월간 {arrow(month_chg)}{abs(month_chg):.2f}%" if month_chg is not None else "월간 -"
+        return f"{name}: {price_str}  {day_str}  ({month_str}, {month_start_str} 比)"
 
-        return f"{name}: {price_str} {day_str}  ({month_str_val}, {month_str} 比)"
-
-    sections = {
-        "📊 *미국 지수*": ["S&P500", "나스닥", "다우"],
-        "📊 *한국 지수*": ["코스피", "코스닥"],
-        "🌐 *매크로 지표*": ["원달러", "WTI유가", "금"],
-        "🪙 *가상자산*": ["비트코인", "이더리움"],
-    }
+    sections = [
+        ("🇺🇸 미국 지수", ["S&P500", "나스닥", "다우", "필라델피아반도체"]),
+        ("🇰🇷 한국 지수", ["코스피", "코스닥"]),
+        ("매크로 지표", ["원달러", "WTI유가", "금"]),
+        ("가상자산", ["비트코인", "이더리움"]),
+    ]
 
     lines = []
-    for section, names in sections.items():
+    for section, names in sections:
         if names[0] in data:
             date_str = data[names[0]]["date"].strftime("%m/%d")
-            lines.append(f"{section} ({date_str} 기준)")
+            lines.append(f"*{section}* ({date_str} 기준)")
         else:
-            lines.append(section)
+            lines.append(f"*{section}*")
         for name in names:
             if name in data:
                 lines.append(fmt(name, data[name]))
         lines.append("")
-
     return "\n".join(lines).strip()
 
 def build_prompt(articles_text, market, session):
@@ -124,7 +118,7 @@ def build_prompt(articles_text, market, session):
 
 [작성 규칙]
 - 반드시 한국어로만 작성
-- 150~200자 내외
+- 80~100자 내외 (간결하게)
 - 문장 끝은 반드시 명사형 종결 (~했다/~됩니다 절대 금지)
 - 개별 종목 언급 금지
 - 아래 순서로 서술:
@@ -144,7 +138,7 @@ def build_prompt(articles_text, market, session):
 
 [작성 규칙]
 - 반드시 한국어로만 작성
-- 150~200자 내외
+- 80~100자 내외 (간결하게)
 - 문장 끝은 반드시 명사형 종결 (~했다/~됩니다 절대 금지)
 - 개별 종목 언급 금지
 - 아래 순서로 서술:
@@ -162,17 +156,14 @@ def summarize_with_groq(articles_text, market, session):
     try:
         res = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            },
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
             json={
                 "model": "llama-3.3-70b-versatile",
                 "messages": [
                     {"role": "system", "content": "당신은 한국의 시니어 매크로 애널리스트입니다. 반드시 한국어로만 답변하세요."},
                     {"role": "user", "content": build_prompt(articles_text, market, session)}
                 ],
-                "max_tokens": 400,
+                "max_tokens": 300,
                 "temperature": 0.3
             }
         )
@@ -190,17 +181,14 @@ def summarize_with_gpt(articles_text, market, session):
     try:
         res = requests.post(
             "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            },
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
             json={
                 "model": "gpt-4o-mini",
                 "messages": [
                     {"role": "system", "content": "당신은 한국의 시니어 매크로 애널리스트입니다. 반드시 한국어로만 답변하세요."},
                     {"role": "user", "content": build_prompt(articles_text, market, session)}
                 ],
-                "max_tokens": 400,
+                "max_tokens": 300,
                 "temperature": 0.3
             }
         )
@@ -219,7 +207,7 @@ def summarize_with_gemini(articles_text, market, session):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         res = requests.post(url, json={
             "contents": [{"parts": [{"text": build_prompt(articles_text, market, session)}]}],
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 400}
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 300}
         })
         data = res.json()
         if 'candidates' in data:
@@ -278,11 +266,7 @@ def get_us_news():
     return summarize(articles_text, "us", session)
 
 def get_kr_news():
-    if IS_MORNING:
-        query = "코스피 코스닥 증시 마감"
-    else:
-        query = "코스피 코스닥 증시 오후"
-
+    query = "코스피 코스닥 증시 마감" if IS_MORNING else "코스피 코스닥 증시 오후"
     rss_urls = [
         f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR&ceid=KR:ko",
         "https://www.yna.co.kr/rss/economy.xml",
@@ -318,11 +302,46 @@ def send_telegram(message):
         "disable_web_page_preview": True
     }
     res = requests.post(url, json=payload)
-    print("텔레그램 응답:", res.json())
+    print("텔레그램 응답:", res.status_code)
+
+def send_email(subject, body):
+    if not EMAIL_SENDER or not EMAIL_PASSWORD:
+        print("이메일 설정 없음, 스킵")
+        return
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = EMAIL_SENDER
+        msg['To'] = EMAIL_RECEIVER
+
+        # 텍스트 버전
+        text_part = MIMEText(body.replace('*', ''), 'plain', 'utf-8')
+
+        # HTML 버전 (보기 좋게)
+        html_body = body.replace('*', '').replace('\n', '<br>')
+        html = f"""
+        <html><body>
+        <div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.8; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <pre style="font-family: Arial, sans-serif; white-space: pre-wrap;">{body.replace('*', '')}</pre>
+        </div>
+        </body></html>
+        """
+        html_part = MIMEText(html, 'html', 'utf-8')
+
+        msg.attach(text_part)
+        msg.attach(html_part)
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            smtp.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
+        print("이메일 전송 완료!")
+    except Exception as e:
+        print(f"이메일 오류: {e}")
 
 if __name__ == "__main__":
-    session_label = "🌅 오전 브리프" if IS_MORNING else "🌆 오후 브리프"
-    header = f"📰 *{session_label}* — {now_kst.strftime('%Y년 %m월 %d일 %H:%M')} KST\n"
+    session_label = "오전 브리프" if IS_MORNING else "오후 브리프"
+    date_str = now_kst.strftime('%Y년 %m월 %d일 %H:%M')
+    header = f"*{session_label} — {date_str} KST*\n"
 
     print("시장 데이터 수집 중...")
     market_data = get_market_data()
@@ -345,4 +364,8 @@ if __name__ == "__main__":
     )
 
     send_telegram(full_message)
+
+    email_subject = f"[시황 브리프] {date_str} - {session_label}"
+    send_email(email_subject, full_message)
+
     print("전송 완료!")
