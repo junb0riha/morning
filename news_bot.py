@@ -245,13 +245,13 @@ def summarize_with_gemini(articles_text, market, session):
         return None
 
 def summarize(articles_text, market, session):
+    result = summarize_with_gemini(articles_text, market, session)
+    if result:
+        return result
     result = summarize_with_groq(articles_text, market, session)
     if result:
         return result
     result = summarize_with_gpt(articles_text, market, session)
-    if result:
-        return result
-    result = summarize_with_gemini(articles_text, market, session)
     if result:
         return result
     return "요약 실패"
