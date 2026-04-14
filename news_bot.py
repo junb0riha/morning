@@ -2,36 +2,78 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
-import time
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '').strip()
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
 NEWS_API_KEY = os.environ.get('NEWS_API_KEY', '').strip()
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '').strip()
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 
-print(f"OPENAI_API_KEY 길이: {len(OPENAI_API_KEY)}")
-print(f"GEMINI_API_KEY 길이: {len(GEMINI_API_KEY)}")
+print(f"GROQ_API_KEY 길이: {len(GROQ_API_KEY)}")
+
+def build_prompt(articles_text, market):
+    if market == "us":
+        return f"""다음은 미국 뉴욕 증시 관련 뉴스들입니다.
+투자자 관점에서 증시 흐름(상승/하락/보합), 주요 원인, 핵심 이슈를 100자 이내로 한국어로 요약해주세요.
+요약문만 출력하세요.
+
+뉴스:
+{articles_text}"""
+    else:
+        return f"""다음은 한국 증시 관련 뉴스들입니다.
+투자자 관점에서 증시 흐름(상승/하락/보합), 주요 원인, 핵심 이슈를 100자 이내로 한국어로 요약해주세요.
+요약문만 출력하세요.
+
+뉴스:
+{articles_text}"""
+
+def summarize_with_groq(articles_text, market):
+    if not GROQ_API_KEY:
+        return None
+    try:
+        res = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [{"role": "user", "content": build_prompt(articles_text, market)}],
+                "max_tokens": 200
+            }
+        )
+        data = res.json()
+        print(f"Groq 응답: {data}")
+        if 'choices' in data:
+            return data['choices'][0]['message']['content'].strip()
+        return None
+    except Exception as e:
+        print(f"Groq 오류: {e}")
+        return None
+
+def summarize_with_gemini(articles_text, market):
+    if not GEMINI_API_KEY:
+        return None
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        res = requests.post(url, json={
+            "contents": [{"parts": [{"text": build_prompt(articles_text, market)}]}]
+        })
+        data = res.json()
+        print(f"Gemini 응답: {data}")
+        if 'candidates' in data:
+            return data['candidates'][0]['content']['parts'][0]['text'].strip()
+        return None
+    except Exception as e:
+        print(f"Gemini 오류: {e}")
+        return None
 
 def summarize_with_gpt(articles_text, market):
     if not OPENAI_API_KEY:
         return None
     try:
-        if market == "us":
-            prompt = f"""다음은 미국 뉴욕 증시 관련 뉴스들입니다.
-투자자 관점에서 증시 흐름(상승/하락/보합), 주요 원인, 핵심 이슈를 100자 이내로 한국어로 요약해주세요.
-요약문만 출력하세요.
-
-뉴스:
-{articles_text}"""
-        else:
-            prompt = f"""다음은 한국 증시 관련 뉴스들입니다.
-투자자 관점에서 증시 흐름(상승/하락/보합), 주요 원인, 핵심 이슈를 100자 이내로 한국어로 요약해주세요.
-요약문만 출력하세요.
-
-뉴스:
-{articles_text}"""
-
         res = requests.post(
             "https://api.openai.com/v1/chat/completions",
             headers={
@@ -40,7 +82,7 @@ def summarize_with_gpt(articles_text, market):
             },
             json={
                 "model": "gpt-4o-mini",
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": build_prompt(articles_text, market)}],
                 "max_tokens": 200
             }
         )
@@ -53,40 +95,13 @@ def summarize_with_gpt(articles_text, market):
         print(f"GPT 오류: {e}")
         return None
 
-def summarize_with_gemini(articles_text, market):
-    if not GEMINI_API_KEY:
-        return None
-    try:
-        if market == "us":
-            prompt = f"""다음은 미국 뉴욕 증시 관련 뉴스들입니다.
-투자자 관점에서 증시 흐름(상승/하락/보합), 주요 원인, 핵심 이슈를 100자 이내로 한국어로 요약해주세요.
-요약문만 출력하세요.
-
-뉴스:
-{articles_text}"""
-        else:
-            prompt = f"""다음은 한국 증시 관련 뉴스들입니다.
-투자자 관점에서 증시 흐름(상승/하락/보합), 주요 원인, 핵심 이슈를 100자 이내로 한국어로 요약해주세요.
-요약문만 출력하세요.
-
-뉴스:
-{articles_text}"""
-
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        res = requests.post(url, json={
-            "contents": [{"parts": [{"text": prompt}]}]
-        })
-        data = res.json()
-        print(f"Gemini 응답: {data}")
-        if 'candidates' in data:
-            return data['candidates'][0]['content']['parts'][0]['text'].strip()
-        return None
-    except Exception as e:
-        print(f"Gemini 오류: {e}")
-        return None
-
 def summarize(articles_text, market):
-    print("GPT로 요약 시도...")
+    print("Groq로 요약 시도...")
+    result = summarize_with_groq(articles_text, market)
+    if result:
+        print("Groq 요약 성공!")
+        return result
+    print("Groq 실패, GPT로 시도...")
     result = summarize_with_gpt(articles_text, market)
     if result:
         print("GPT 요약 성공!")
