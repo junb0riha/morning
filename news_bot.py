@@ -22,7 +22,7 @@ now_kst = now_utc + timedelta(hours=9)
 hour_kst = now_kst.hour
 IS_MORNING = hour_kst < 12
 MONTH_START = now_kst.date().replace(day=1)
-DIVIDER = '━━━━━━━━━━'
+DIVIDER = '━━━━━━━━━━━━'
 
 print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')} / {'오전 세션' if IS_MORNING else '오후 세션'}")
 
@@ -51,18 +51,21 @@ def get_market_data():
             curr_date = hist.index[-1].date()
             prev = hist['Close'].iloc[-2]
             day_change = ((curr - prev) / prev) * 100
+
+            # 지난달 마지막 영업일 기준 월간 수익률
             month_price = None
-            for i in range(len(hist)):
+            for i in range(len(hist) - 1, -1, -1):
                 d = hist.index[i].date()
                 if d < MONTH_START:
                     month_price = hist['Close'].iloc[i]
+                    break
+
             month_change = ((curr - month_price) / month_price) * 100 if month_price else None
             results[name] = {
                 "price": curr,
                 "date": curr_date,
                 "day_change": day_change,
                 "month_change": month_change,
-                "month_start": MONTH_START,
             }
         except Exception as e:
             print(f"{name} 데이터 오류: {e}")
@@ -76,7 +79,6 @@ def format_market_data(data):
         price = d["price"]
         day_chg = d["day_change"]
         month_chg = d["month_change"]
-        month_start_str = d["month_start"].strftime("%m/%d")
 
         if name == "원달러":
             price_str = f"{price:,.1f}원"
@@ -89,7 +91,7 @@ def format_market_data(data):
 
         day_str = f"{arrow(day_chg)}{abs(day_chg):.2f}%"
         month_str = f"월간 {arrow(month_chg)}{abs(month_chg):.2f}%" if month_chg is not None else "월간 -"
-        return f"{name}: {price_str}  {day_str}  ({month_str}, {month_start_str} 比)"
+        return f"{name}: {price_str}  {day_str}  ({month_str})"
 
     lines = []
 
@@ -323,7 +325,6 @@ def send_telegram(message):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
-        "parse_mode": "Markdown",
         "disable_web_page_preview": True
     }
     res = requests.post(url, json=payload)
@@ -339,13 +340,11 @@ def send_email(subject, body):
         msg['From'] = EMAIL_SENDER
         msg['To'] = EMAIL_RECEIVER
 
-        clean_body = body.replace('*', '')
-        text_part = MIMEText(clean_body, 'plain', 'utf-8')
-
+        text_part = MIMEText(body, 'plain', 'utf-8')
         html = f"""
 <html><body>
 <div style="font-family: 'Malgun Gothic', Arial, sans-serif; font-size: 14px; line-height: 2.0; max-width: 620px; margin: 0 auto; padding: 24px; color: #1a1a1a;">
-<pre style="font-family: 'Malgun Gothic', Arial, sans-serif; font-size: 14px; line-height: 2.0; white-space: pre-wrap; word-break: keep-all;">{clean_body}</pre>
+<pre style="font-family: 'Malgun Gothic', Arial, sans-serif; font-size: 14px; line-height: 2.0; white-space: pre-wrap; word-break: keep-all;">{body}</pre>
 </div>
 </body></html>
 """
