@@ -99,7 +99,7 @@ def format_market_data(data):
     us_names = ["S&P500", "나스닥", "다우", "필라델피아반도체"]
     if us_names[0] in data:
         date_str = data[us_names[0]]["date"].strftime("%m/%d")
-        lines.append(f"🇺🇸 미국 지수 ({date_str} 기준)")
+        lines.append(f"🇺🇸미국 ({date_str} 기준)")
     for name in us_names:
         if name in data:
             lines.append(fmt(name, data[name]))
@@ -109,7 +109,7 @@ def format_market_data(data):
     kr_names = ["코스피", "코스닥"]
     if kr_names[0] in data:
         date_str = data[kr_names[0]]["date"].strftime("%m/%d")
-        lines.append(f"🇰🇷 한국 지수 ({date_str} 기준)")
+        lines.append(f"🇰🇷한국 ({date_str} 기준)")
     for name in kr_names:
         if name in data:
             lines.append(fmt(name, data[name]))
@@ -119,7 +119,7 @@ def format_market_data(data):
     macro_names = ["원달러", "WTI유가", "금"]
     if macro_names[0] in data:
         date_str = data[macro_names[0]]["date"].strftime("%m/%d")
-        lines.append(f"▪ 매크로 지표 ({date_str} 기준)")
+        lines.append(f"✔️매크로 ({date_str} 기준)")
     for name in macro_names:
         if name in data:
             lines.append(fmt(name, data[name]))
@@ -129,7 +129,7 @@ def format_market_data(data):
     crypto_names = ["비트코인", "이더리움"]
     if crypto_names[0] in data:
         date_str = data[crypto_names[0]]["date"].strftime("%m/%d")
-        lines.append(f"▪ 가상자산 ({date_str} 기준)")
+        lines.append(f"✔️코인 ({date_str} 기준)")
     for name in crypto_names:
         if name in data:
             lines.append(fmt(name, data[name]))
