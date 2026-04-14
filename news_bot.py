@@ -2,6 +2,7 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+import yfinance as yf
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '').strip()
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
@@ -10,7 +11,97 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '').strip()
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 
-print(f"GROQ_API_KEY 길이: {len(GROQ_API_KEY)}")
+def get_market_data():
+    tickers = {
+        "S&P500": "^GSPC",
+        "나스닥": "^IXIC",
+        "다우": "^DJI",
+        "코스피": "^KS11",
+        "코스닥": "^KQ11",
+        "원달러": "KRW=X",
+        "WTI유가": "CL=F",
+        "금": "GC=F",
+        "비트코인": "BTC-USD",
+        "이더리움": "ETH-USD",
+    }
+
+    results = {}
+    for name, symbol in tickers.items():
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="2d")
+            if len(hist) >= 2:
+                prev = hist['Close'].iloc[-2]
+                curr = hist['Close'].iloc[-1]
+                change = ((curr - prev) / prev) * 100
+                results[name] = (curr, change)
+            elif len(hist) == 1:
+                curr = hist['Close'].iloc[-1]
+                results[name] = (curr, 0)
+        except Exception as e:
+            print(f"{name} 데이터 오류: {e}")
+
+    return results
+
+def format_market_data(data):
+    def arrow(chg):
+        return "▲" if chg >= 0 else "▼"
+
+    def fmt_price(name, val, chg):
+        if name in ["원달러"]:
+            return f"{name}: {val:,.1f}원 {arrow(chg)}{abs(chg):.2f}%"
+        elif name in ["WTI유가"]:
+            return f"{name}: ${val:,.2f} {arrow(chg)}{abs(chg):.2f}%"
+        elif name in ["금"]:
+            return f"{name}: ${val:,.1f} {arrow(chg)}{abs(chg):.2f}%"
+        elif name in ["비트코인"]:
+            return f"{name}: ${val:,.0f} {arrow(chg)}{abs(chg):.2f}%"
+        elif name in ["이더리움"]:
+            return f"{name}: ${val:,.0f} {arrow(chg)}{abs(chg):.2f}%"
+        else:
+            return f"{name}: {val:,.2f} {arrow(chg)}{abs(chg):.2f}%"
+
+    us_section = "*📊 미국 시장 지표*"
+    kr_section = "\n*📊 한국 시장 지표*"
+    macro_section = "\n*🌐 주요 매크로 지표*"
+    crypto_section = "\n*🪙 가상자산*"
+
+    us_lines = []
+    kr_lines = []
+    macro_lines = []
+    crypto_lines = []
+
+    us_names = ["S&P500", "나스닥", "다우"]
+    kr_names = ["코스피", "코스닥"]
+    macro_names = ["원달러", "WTI유가", "금"]
+    crypto_names = ["비트코인", "이더리움"]
+
+    for name in us_names:
+        if name in data:
+            val, chg = data[name]
+            us_lines.append(fmt_price(name, val, chg))
+
+    for name in kr_names:
+        if name in data:
+            val, chg = data[name]
+            kr_lines.append(fmt_price(name, val, chg))
+
+    for name in macro_names:
+        if name in data:
+            val, chg = data[name]
+            macro_lines.append(fmt_price(name, val, chg))
+
+    for name in crypto_names:
+        if name in data:
+            val, chg = data[name]
+            crypto_lines.append(fmt_price(name, val, chg))
+
+    result = us_section + "\n" + "\n".join(us_lines)
+    result += kr_section + "\n" + "\n".join(kr_lines)
+    result += macro_section + "\n" + "\n".join(macro_lines)
+    result += crypto_section + "\n" + "\n".join(crypto_lines)
+
+    return result
 
 def build_prompt(articles_text, market):
     if market == "us":
@@ -18,14 +109,14 @@ def build_prompt(articles_text, market):
 
 [작성 규칙]
 - 반드시 한국어로만 작성 (영어, 일본어, 중국어 절대 금지)
-- 200자 내외로 작성
+- 200자 내외
 - 개별 종목 언급 금지
 - 아래 항목 중심으로 서술:
   1. 주요 지수 흐름 (S&P500, 나스닥, 다우)
   2. 핵심 매크로 원인 (연준 정책, 금리, 유가, 지정학적 리스크 등)
   3. 투자자 심리 및 시장 분위기
-- 자연스러운 문어체 한국어 문장으로 작성
-- 요약문만 출력 (제목, 설명, 부연 없이)
+- 말투: ~했다 금지. "상승 마감", "하락 전환", "투자 재개" 등 단호한 명사형 표현 사용
+- 요약문만 출력
 
 뉴스:
 {articles_text}"""
@@ -34,14 +125,14 @@ def build_prompt(articles_text, market):
 
 [작성 규칙]
 - 반드시 한국어로만 작성 (영어, 일본어, 중국어 절대 금지)
-- 200자 내외로 작성
+- 200자 내외
 - 개별 종목 언급 금지
 - 아래 항목 중심으로 서술:
   1. 주요 지수 흐름 (코스피, 코스닥)
   2. 핵심 매크로 원인 (환율, 외국인 수급, 유가, 지정학적 리스크 등)
   3. 투자자 심리 및 시장 분위기
-- 자연스러운 문어체 한국어 문장으로 작성
-- 요약문만 출력 (제목, 설명, 부연 없이)
+- 말투: ~했다 금지. "상승 마감", "하락 전환", "외국인 순매수 지속" 등 단호한 명사형 표현 사용
+- 요약문만 출력
 
 뉴스:
 {articles_text}"""
@@ -73,7 +164,6 @@ def summarize_with_groq(articles_text, market):
             }
         )
         data = res.json()
-        print(f"Groq 응답: {data}")
         if 'choices' in data:
             return data['choices'][0]['message']['content'].strip()
         return None
@@ -108,7 +198,6 @@ def summarize_with_gpt(articles_text, market):
             }
         )
         data = res.json()
-        print(f"GPT 응답: {data}")
         if 'choices' in data:
             return data['choices'][0]['message']['content'].strip()
         return None
@@ -126,7 +215,6 @@ def summarize_with_gemini(articles_text, market):
             "generationConfig": {"temperature": 0.3, "maxOutputTokens": 400}
         })
         data = res.json()
-        print(f"Gemini 응답: {data}")
         if 'candidates' in data:
             return data['candidates'][0]['content']['parts'][0]['text'].strip()
         return None
@@ -135,20 +223,14 @@ def summarize_with_gemini(articles_text, market):
         return None
 
 def summarize(articles_text, market):
-    print("Groq로 요약 시도...")
     result = summarize_with_groq(articles_text, market)
     if result:
-        print("Groq 요약 성공!")
         return result
-    print("Groq 실패, GPT로 시도...")
     result = summarize_with_gpt(articles_text, market)
     if result:
-        print("GPT 요약 성공!")
         return result
-    print("GPT 실패, Gemini로 시도...")
     result = summarize_with_gemini(articles_text, market)
     if result:
-        print("Gemini 요약 성공!")
         return result
     return "요약 실패"
 
@@ -185,9 +267,8 @@ def get_us_news():
             articles.append(f"- {title}: {desc}")
 
     articles_text = "\n".join(articles[:5])
-    print(f"미국 뉴스 수집: {len(articles)}건")
     summary = summarize(articles_text, "us")
-    return f"🇺🇸 *미국 증시 (전일)*\n{summary}"
+    return summary
 
 def get_kr_news():
     rss_urls = [
@@ -198,7 +279,6 @@ def get_kr_news():
     for rss_url in rss_urls:
         try:
             res = requests.get(rss_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
-            print(f"한국 RSS 상태코드: {res.status_code} ({rss_url})")
             root = ET.fromstring(res.content)
             for item in root.findall('.//item')[:5]:
                 title = item.findtext('title', '').strip()
@@ -211,13 +291,11 @@ def get_kr_news():
             print(f"한국 RSS 오류: {e}")
 
     if not articles:
-        print("한국 뉴스 수집 실패")
-        return "🇰🇷 *한국 증시 (당일)*\n뉴스 수집 실패"
+        return "뉴스 수집 실패"
 
     articles_text = "\n".join(articles[:5])
-    print(f"한국 뉴스 수집: {len(articles)}건")
     summary = summarize(articles_text, "kr")
-    return f"🇰🇷 *한국 증시 (당일)*\n{summary}"
+    return summary
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -233,8 +311,26 @@ def send_telegram(message):
 if __name__ == "__main__":
     now_kst = datetime.utcnow() + timedelta(hours=9)
     header = f"📰 *모닝 브리프* — {now_kst.strftime('%Y년 %m월 %d일 %H:%M')} KST\n"
-    us_news = get_us_news()
-    kr_news = get_kr_news()
-    full_message = header + "\n" + us_news + "\n\n" + kr_news
+
+    print("시장 데이터 수집 중...")
+    market_data = get_market_data()
+    market_block = format_market_data(market_data)
+
+    print("미국 뉴스 수집 중...")
+    us_summary = get_us_news()
+
+    print("한국 뉴스 수집 중...")
+    kr_summary = get_kr_news()
+
+    us_block = f"*🇺🇸 미국 증시 시황*\n{us_summary}"
+    kr_block = f"*🇰🇷 한국 증시 시황*\n{kr_summary}"
+
+    full_message = (
+        header + "\n"
+        + market_block + "\n\n"
+        + us_block + "\n\n"
+        + kr_block
+    )
+
     send_telegram(full_message)
     print("전송 완료!")
