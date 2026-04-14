@@ -150,6 +150,7 @@ def build_prompt(articles_text, market, session):
   2. 주요 매크로 변수 (금리/유가/환율/지정학) 및 수치 포함
   3. 투자자 심리 및 수급 흐름
 - 요약문만 출력 (제목/번호/불릿 없이 단락으로)
+- 모든 문장 "~다"로 끝내기 절대 금지
 
 뉴스:
 {articles_text}"""
@@ -172,6 +173,7 @@ def build_prompt(articles_text, market, session):
   2. 주요 매크로 변수 (환율/외국인수급/유가/금리) 및 수치 포함
   3. 투자자 심리 및 수급 흐름
 - 요약문만 출력 (제목/번호/불릿 없이 단락으로)
+- 모든 문장 "~다"로 끝내기 절대 금지
 
 뉴스:
 {articles_text}"""
