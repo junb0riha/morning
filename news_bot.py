@@ -2,7 +2,6 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
-from email.utils import parsedate_to_datetime
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '').strip()
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
@@ -10,8 +9,12 @@ NEWS_API_KEY = os.environ.get('NEWS_API_KEY', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 
 print(f"GEMINI_API_KEY 길이: {len(GEMINI_API_KEY)}")
+print(f"TELEGRAM_TOKEN 길이: {len(TELEGRAM_TOKEN)}")
 
 def summarize_with_gemini(articles_text, market):
+    if not GEMINI_API_KEY:
+        print("GEMINI_API_KEY 없음!")
+        return "요약 실패 (API 키 없음)"
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         if market == "us":
@@ -39,15 +42,10 @@ def summarize_with_gemini(articles_text, market):
         return "요약 실패"
 
 def get_us_news():
-    # 한국시간 00시~09시 = UTC 전날 15시~00시
-    now_utc = datetime.utcnow()
-    time_from = (now_utc - timedelta(hours=18)).strftime('%Y-%m-%dT%H:%M:%SZ')
-
     rss_urls = [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US",
         "https://news.google.com/rss/search?q=NYSE+stock+market+today&hl=en-US&gl=US&ceid=US:en",
     ]
-
     articles = []
     for rss_url in rss_urls:
         try:
@@ -64,7 +62,6 @@ def get_us_news():
             print(f"미국 RSS 오류: {e}")
 
     if not articles:
-        # fallback: NewsAPI
         url = (
             f"https://newsapi.org/v2/top-headlines"
             f"?category=business&language=en&country=us"
@@ -86,7 +83,6 @@ def get_kr_news():
         "https://finance.naver.com/news/news_list.naver?mode=RSS&section=market_now",
         "https://www.yonhapnewstv.co.kr/category/news/economy/feed/",
     ]
-
     articles = []
     for rss_url in rss_urls:
         try:
