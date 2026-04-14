@@ -14,18 +14,34 @@ print(f"GROQ_API_KEY 길이: {len(GROQ_API_KEY)}")
 
 def build_prompt(articles_text, market):
     if market == "us":
-        return f"""다음은 미국 뉴욕 증시 관련 뉴스들입니다.
-투자자 관점에서 주요 원인과 핵심 이슈를 최소150자에서 300자 내외로 한국어로 서술해주세요.
-숫자, 구체적인 이유를 포함해서 설명해주세요.
-요약문만 출력하세요.
+        return f"""당신은 한국의 시니어 매크로 애널리스트입니다. 아래 미국 증시 뉴스를 바탕으로 전일 뉴욕 증시 매크로 시황을 요약해주세요.
+
+[작성 규칙]
+- 반드시 한국어로만 작성 (영어, 일본어, 중국어 절대 금지)
+- 200자 내외로 작성
+- 개별 종목 언급 금지
+- 아래 항목 중심으로 서술:
+  1. 주요 지수 흐름 (S&P500, 나스닥, 다우)
+  2. 핵심 매크로 원인 (연준 정책, 금리, 유가, 지정학적 리스크 등)
+  3. 투자자 심리 및 시장 분위기
+- 자연스러운 문어체 한국어 문장으로 작성
+- 요약문만 출력 (제목, 설명, 부연 없이)
 
 뉴스:
 {articles_text}"""
     else:
-        return f"""다음은 한국 증시 관련 뉴스들입니다.
-투자자 관점에서 주요 원인과 핵심 이슈를 최소150자에서 300자 내외로 한국어로 서술해주세요.
-숫자, 구체적인 이유를 포함해서 설명해주세요.
-요약문만 출력하세요.
+        return f"""당신은 한국의 시니어 매크로 애널리스트입니다. 아래 한국 증시 뉴스를 바탕으로 당일 한국 증시 매크로 시황을 요약해주세요.
+
+[작성 규칙]
+- 반드시 한국어로만 작성 (영어, 일본어, 중국어 절대 금지)
+- 200자 내외로 작성
+- 개별 종목 언급 금지
+- 아래 항목 중심으로 서술:
+  1. 주요 지수 흐름 (코스피, 코스닥)
+  2. 핵심 매크로 원인 (환율, 외국인 수급, 유가, 지정학적 리스크 등)
+  3. 투자자 심리 및 시장 분위기
+- 자연스러운 문어체 한국어 문장으로 작성
+- 요약문만 출력 (제목, 설명, 부연 없이)
 
 뉴스:
 {articles_text}"""
@@ -42,8 +58,18 @@ def summarize_with_groq(articles_text, market):
             },
             json={
                 "model": "llama-3.3-70b-versatile",
-                "messages": [{"role": "user", "content": build_prompt(articles_text, market)}],
-                "max_tokens": 200
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "당신은 한국의 시니어 매크로 애널리스트입니다. 반드시 한국어로만 답변하세요."
+                    },
+                    {
+                        "role": "user",
+                        "content": build_prompt(articles_text, market)
+                    }
+                ],
+                "max_tokens": 400,
+                "temperature": 0.3
             }
         )
         data = res.json()
@@ -53,23 +79,6 @@ def summarize_with_groq(articles_text, market):
         return None
     except Exception as e:
         print(f"Groq 오류: {e}")
-        return None
-
-def summarize_with_gemini(articles_text, market):
-    if not GEMINI_API_KEY:
-        return None
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        res = requests.post(url, json={
-            "contents": [{"parts": [{"text": build_prompt(articles_text, market)}]}]
-        })
-        data = res.json()
-        print(f"Gemini 응답: {data}")
-        if 'candidates' in data:
-            return data['candidates'][0]['content']['parts'][0]['text'].strip()
-        return None
-    except Exception as e:
-        print(f"Gemini 오류: {e}")
         return None
 
 def summarize_with_gpt(articles_text, market):
@@ -84,8 +93,18 @@ def summarize_with_gpt(articles_text, market):
             },
             json={
                 "model": "gpt-4o-mini",
-                "messages": [{"role": "user", "content": build_prompt(articles_text, market)}],
-                "max_tokens": 200
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "당신은 한국의 시니어 매크로 애널리스트입니다. 반드시 한국어로만 답변하세요."
+                    },
+                    {
+                        "role": "user",
+                        "content": build_prompt(articles_text, market)
+                    }
+                ],
+                "max_tokens": 400,
+                "temperature": 0.3
             }
         )
         data = res.json()
@@ -95,6 +114,24 @@ def summarize_with_gpt(articles_text, market):
         return None
     except Exception as e:
         print(f"GPT 오류: {e}")
+        return None
+
+def summarize_with_gemini(articles_text, market):
+    if not GEMINI_API_KEY:
+        return None
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        res = requests.post(url, json={
+            "contents": [{"parts": [{"text": build_prompt(articles_text, market)}]}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 400}
+        })
+        data = res.json()
+        print(f"Gemini 응답: {data}")
+        if 'candidates' in data:
+            return data['candidates'][0]['content']['parts'][0]['text'].strip()
+        return None
+    except Exception as e:
+        print(f"Gemini 오류: {e}")
         return None
 
 def summarize(articles_text, market):
@@ -118,7 +155,7 @@ def summarize(articles_text, market):
 def get_us_news():
     rss_urls = [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US",
-        "https://news.google.com/rss/search?q=NYSE+stock+market+today&hl=en-US&gl=US&ceid=US:en",
+        "https://news.google.com/rss/search?q=NYSE+Nasdaq+stock+market&hl=en-US&gl=US&ceid=US:en",
     ]
     articles = []
     for rss_url in rss_urls:
