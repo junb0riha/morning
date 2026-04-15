@@ -174,7 +174,7 @@ def build_prompt(articles_text, market, session):
 - 뉴스에 없는 내용 추가 금지
 - 기사 간 내용이 상충할 경우, 종가 방향과 가장 직접 연결되는 재료만 채택
 - 장중 기사보다 마감 기사 우선
-- 140자 이상 190자 이하
+- 220자 이상 250자 이하
 
 [서술 순서]
 1. 증시 방향
@@ -209,7 +209,7 @@ def build_prompt(articles_text, market, session):
 - 뉴스에 없는 내용 추가 금지
 - 기사 간 내용이 상충할 경우, 장 마감 방향과 수급에 직접 연결되는 재료만 채택
 - 장중 기사보다 마감 기사 우선
-- 140자 이상 190자 이하
+- 220자 이상 250자 이하
 
 [서술 순서]
 1. 증시 방향
@@ -264,10 +264,10 @@ def post_process_summary(text, market):
     text = " ".join(deduped)
 
     # 너무 길면 잘라내기
-    if len(text) > 210:
-        cut = text[:210]
+    if len(text) > 300:
+        cut = text[:300]
         last_period = cut.rfind('.')
-        if last_period > 80:
+        if last_period > 150:
             text = cut[:last_period + 1]
 
     return text.strip()
