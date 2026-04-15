@@ -2,7 +2,7 @@ name: Morning News Brief
 
 on:
   schedule:
-    - cron: '30 23 * * *'   # 매일 KST 08:30 (UTC 23:30 전날)
+    - cron: '30 23 * * *'   # KST 08:30
     - cron: '20 7 * * *'    # 매일 KST 16:20 (UTC 07:20)
   workflow_dispatch:
 
