@@ -115,7 +115,7 @@ def format_market_data(data):
     macro_names = ["원달러", "WTI유가", "금"]
     if macro_names[0] in data:
         date_str = data[macro_names[0]]["date"].strftime("%m/%d")
-        lines.append(f"✔️매크로 ({date_str} 기준)")
+        lines.append(f"▪ 매크로 ({date_str} 기준)")
     for name in macro_names:
         if name in data:
             lines.append(fmt(name, data[name]))
@@ -124,7 +124,7 @@ def format_market_data(data):
     crypto_names = ["비트코인", "이더리움"]
     if crypto_names[0] in data:
         date_str = data[crypto_names[0]]["date"].strftime("%m/%d")
-        lines.append(f"✔️코인 ({date_str} 기준)")
+        lines.append(f"▪ 코인 ({date_str} 기준)")
     for name in crypto_names:
         if name in data:
             lines.append(fmt(name, data[name]))
@@ -145,12 +145,13 @@ def build_prompt(articles_text, market, session):
 - 개별 종목 언급 금지
 - "가능성이 있다", "~할 수 있다", "~될 수 있다" 등 불확실 추측 표현 절대 금지
 - "개미", "개미투자자" 등 속어/슬랭 표현 절대 금지. 대신 "개인투자자" 사용
+- 모든 문장 "~다"로 끝내기 절대 금지
+- 뉴스에 없는 내용 절대 추가 금지. 모르면 "정보 부족"으로 표기
 - 아래 순서로 서술:
-  1. 증시 방향 + 핵심 원인 한 줄
+  1. 증시 방향 + 핵심 원인 한 줄 (반드시 실제 뉴스 기반으로만 작성)
   2. 주요 매크로 변수 (금리/유가/환율/지정학) 및 수치 포함
   3. 투자자 심리 및 수급 흐름
 - 요약문만 출력 (제목/번호/불릿 없이 단락으로)
-- 모든 문장 "~다"로 끝내기 절대 금지
 
 뉴스:
 {articles_text}"""
@@ -168,12 +169,13 @@ def build_prompt(articles_text, market, session):
 - 개별 종목 언급 금지
 - "가능성이 있다", "~할 수 있다", "~될 수 있다" 등 불확실 추측 표현 절대 금지
 - "개미", "개미투자자" 등 속어/슬랭 표현 절대 금지. 대신 "개인투자자" 사용
+- 모든 문장 "~다"로 끝내기 절대 금지
+- 뉴스에 없는 내용 절대 추가 금지. 모르면 "정보 부족"으로 표기
 - 아래 순서로 서술:
-  1. 증시 방향 + 핵심 원인 한 줄
+  1. 증시 방향 + 핵심 원인 한 줄 (반드시 실제 뉴스 기반으로만 작성)
   2. 주요 매크로 변수 (환율/외국인수급/유가/금리) 및 수치 포함
   3. 투자자 심리 및 수급 흐름
 - 요약문만 출력 (제목/번호/불릿 없이 단락으로)
-- 모든 문장 "~다"로 끝내기 절대 금지
 
 뉴스:
 {articles_text}"""
@@ -262,14 +264,16 @@ def summarize(articles_text, market, session):
 
 def get_us_news():
     if IS_MORNING:
-        query = "US stock market NYSE Nasdaq S&P500 close overnight"
+        query = "stock market Wall Street S&P500 Nasdaq close recap yesterday"
     else:
-        query = "US stock market NYSE Nasdaq S&P500 close overnight"
+        query = "stock market Wall Street S&P500 Nasdaq today futures"
 
     rss_urls = [
         f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=en-US&gl=US&ceid=US:en",
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US",
+        "https://feeds.marketwatch.com/marketwatch/topstories/",
     ]
+
     articles = []
     for rss_url in rss_urls:
         try:
@@ -278,8 +282,9 @@ def get_us_news():
             for item in root.findall('.//item')[:5]:
                 title = item.findtext('title', '').strip()
                 description = item.findtext('description', '').strip()
+                pub_date = item.findtext('pubDate', '').strip()
                 if title:
-                    articles.append(f"- {title}: {description}")
+                    articles.append(f"- [{pub_date}] {title}: {description}")
             if len(articles) >= 5:
                 break
         except Exception as e:
@@ -295,18 +300,16 @@ def get_us_news():
         for a in res.get('articles', []):
             title = a.get('title', '').split(' - ')[0]
             desc = a.get('description', '')
-            articles.append(f"- {title}: {desc}")
+            pub = a.get('publishedAt', '')
+            articles.append(f"- [{pub}] {title}: {desc}")
 
     articles_text = "\n".join(articles[:5])
+    print(f"미국 뉴스 수집: {len(articles)}건")
     session = "morning" if IS_MORNING else "afternoon"
     return summarize(articles_text, "us", session)
 
 def get_kr_news():
-    if IS_MORNING:
-        query = "코스피 코스닥 전일 마감 시황"
-    else:
-        query = "코스피 코스닥 장중 오후 시황"
-
+    query = "코스피 코스닥 전일 마감 시황" if IS_MORNING else "코스피 코스닥 장중 오후 시황"
     rss_urls = [
         f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR&ceid=KR:ko",
         "https://www.yna.co.kr/rss/economy.xml",
@@ -319,8 +322,9 @@ def get_kr_news():
             for item in root.findall('.//item')[:5]:
                 title = item.findtext('title', '').strip()
                 description = item.findtext('description', '').strip()
+                pub_date = item.findtext('pubDate', '').strip()
                 if title:
-                    articles.append(f"- {title}: {description}")
+                    articles.append(f"- [{pub_date}] {title}: {description}")
             if len(articles) >= 5:
                 break
         except Exception as e:
@@ -330,6 +334,7 @@ def get_kr_news():
         return "뉴스 수집 실패"
 
     articles_text = "\n".join(articles[:5])
+    print(f"한국 뉴스 수집: {len(articles)}건")
     session = "morning" if IS_MORNING else "afternoon"
     return summarize(articles_text, "kr", session)
 
