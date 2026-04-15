@@ -2,25 +2,23 @@ name: Morning News Brief
 
 on:
   schedule:
-    - cron: '30 23 * * *'
+    - cron: '30 8 * * *'
       timezone: "Asia/Seoul"
-    - cron: '30 0 * * *'
+    - cron: '30 9 * * *'
       timezone: "Asia/Seoul"
-    - cron: '40 0 * * *'
+    - cron: '40 9 * * *'
       timezone: "Asia/Seoul"
-    - cron: '45 1 * * *'
+    - cron: '45 10 * * *'
       timezone: "Asia/Seoul"
-    - cron: '20 7 * * *'
+    - cron: '5 11 * * *'
       timezone: "Asia/Seoul"
-  push:
-    branches:
-      - main
+    - cron: '20 16 * * *'
+      timezone: "Asia/Seoul"
   workflow_dispatch:
 
 jobs:
   send-news:
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
