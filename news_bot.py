@@ -261,8 +261,13 @@ def summarize(articles_text, market, session):
     return "요약 실패"
 
 def get_us_news():
+    if IS_MORNING:
+        query = "US stock market NYSE Nasdaq S&P500 close overnight"
+    else:
+        query = "US stock market NYSE Nasdaq S&P500 close overnight"
+
     rss_urls = [
-        "https://news.google.com/rss/search?q=US+stock+market+NYSE+Nasdaq+S%26P500&hl=en-US&gl=US&ceid=US:en",
+        f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=en-US&gl=US&ceid=US:en",
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US",
     ]
     articles = []
@@ -297,7 +302,11 @@ def get_us_news():
     return summarize(articles_text, "us", session)
 
 def get_kr_news():
-    query = "코스피 코스닥 증시 마감" if IS_MORNING else "코스피 코스닥 증시 오후"
+    if IS_MORNING:
+        query = "코스피 코스닥 전일 마감 시황"
+    else:
+        query = "코스피 코스닥 장중 오후 시황"
+
     rss_urls = [
         f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR&ceid=KR:ko",
         "https://www.yna.co.kr/rss/economy.xml",
