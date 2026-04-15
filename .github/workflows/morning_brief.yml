@@ -4,15 +4,7 @@ on:
   schedule:
     - cron: '30 8 * * *'
       timezone: "Asia/Seoul"
-    - cron: '30 9 * * *'
-      timezone: "Asia/Seoul"
-    - cron: '40 9 * * *'
-      timezone: "Asia/Seoul"
-    - cron: '45 10 * * *'
-      timezone: "Asia/Seoul"
-    - cron: '5 11 * * *'
-      timezone: "Asia/Seoul"
-    - cron: '10 11 * * *'
+    - cron: '30 12 * * *'
       timezone: "Asia/Seoul"
     - cron: '20 16 * * *'
       timezone: "Asia/Seoul"
