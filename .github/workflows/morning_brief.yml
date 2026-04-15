@@ -2,12 +2,13 @@ name: Morning News Brief
 
 on:
   schedule:
-    - cron: '30 8 * * *'
-      timezone: "Asia/Seoul"
-    - cron: '30 12 * * *'
-      timezone: "Asia/Seoul"
-    - cron: '20 16 * * *'
-      timezone: "Asia/Seoul"
+    - cron: '30 23 * * *'   # KST 08:30
+    - cron: '30 0 * * *'    # KST 09:30
+    - cron: '40 0 * * *'    # KST 09:40
+    - cron: '45 1 * * *'    # KST 10:45
+    - cron: '5 2 * * *'     # KST 11:05
+    - cron: '10 2 * * *'    # KST 11:10
+    - cron: '20 7 * * *'    # KST 16:20
   workflow_dispatch:
 
 jobs:
