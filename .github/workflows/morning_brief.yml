@@ -2,15 +2,25 @@ name: Morning News Brief
 
 on:
   schedule:
-    - cron: '30 23 * * *'   # KST 08:30 (UTC 23:30 전날)
-    - cron: '30 0 * * *'    # KST 09:30 (UTC 00:30)
-    - cron: '40 0 * * *'    # KST 09:40 (UTC 00:40)
-    - cron: '20 7 * * *'    # KST 16:20 (UTC 07:20)
+    - cron: '30 23 * * *'
+      timezone: "Asia/Seoul"
+    - cron: '30 0 * * *'
+      timezone: "Asia/Seoul"
+    - cron: '40 0 * * *'
+      timezone: "Asia/Seoul"
+    - cron: '45 1 * * *'
+      timezone: "Asia/Seoul"
+    - cron: '20 7 * * *'
+      timezone: "Asia/Seoul"
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   send-news:
     runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
@@ -33,5 +43,3 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: python news_bot.py
-
-# resync 2026-04-15
