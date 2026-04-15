@@ -1,8 +1,11 @@
 import os
 import re
 import html
+import json
+import time
 import requests
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from datetime import datetime, timedelta
 import yfinance as yf
 import smtplib
@@ -18,6 +21,8 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 EMAIL_SENDER = os.environ.get('EMAIL_SENDER', '').strip()
 EMAIL_PASSWORD = os.environ.get('EMAIL_PASSWORD', '').strip()
 EMAIL_RECEIVER = 'junbo119.shim@samsung.com'
+
+CACHE_FILE = Path("market_cache.json")
 
 now_utc = datetime.utcnow()
 now_kst = now_utc + timedelta(hours=9)
@@ -38,6 +43,45 @@ def clean_text(text: str) -> str:
     return text
 
 
+def save_market_cache(data: dict):
+    try:
+        payload = {
+            "saved_at_kst": now_kst.strftime("%Y-%m-%d %H:%M"),
+            "data": data
+        }
+        CACHE_FILE.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        print("시장 데이터 캐시 저장 완료")
+    except Exception as e:
+        print(f"캐시 저장 오류: {e}")
+
+
+def load_market_cache():
+    try:
+        if CACHE_FILE.exists():
+            payload = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            print("시장 데이터 캐시 로드 완료")
+            return payload
+    except Exception as e:
+        print(f"캐시 로드 오류: {e}")
+    return None
+
+
+def fetch_history_with_retry(symbol, retries=3, base_sleep=2):
+    last_error = None
+    for attempt in range(retries):
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="40d", auto_adjust=False, timeout=30)
+            if hist is not None and len(hist) >= 2:
+                return hist
+            raise RuntimeError(f"{symbol} 히스토리 데이터 부족")
+        except Exception as e:
+            last_error = e
+            print(f"{symbol} 재시도 {attempt + 1}/{retries} 실패: {e}")
+            time.sleep(base_sleep * (attempt + 1))
+    raise last_error
+
+
 def get_market_data():
     tickers = {
         "S&P500": "^GSPC",
@@ -54,14 +98,11 @@ def get_market_data():
     }
 
     results = {}
+    failed = []
+
     for name, symbol in tickers.items():
         try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="40d", auto_adjust=False)
-
-            if hist is None or len(hist) < 2:
-                continue
-
+            hist = fetch_history_with_retry(symbol)
             curr = float(hist['Close'].iloc[-1])
             prev = float(hist['Close'].iloc[-2])
             curr_date = hist.index[-1].date()
@@ -78,14 +119,17 @@ def get_market_data():
 
             results[name] = {
                 "price": curr,
-                "date": curr_date,
+                "date": curr_date.isoformat(),
                 "day_change": day_change,
                 "month_change": month_change,
+                "source_status": "live"
             }
+
         except Exception as e:
+            failed.append(name)
             print(f"{name} 데이터 오류: {e}")
 
-    return results
+    return results, failed
 
 
 def format_market_data(data):
@@ -96,6 +140,7 @@ def format_market_data(data):
         price = d["price"]
         day_chg = d["day_change"]
         month_chg = d["month_change"]
+        status = d.get("source_status", "live")
 
         if name == "원달러":
             price_str = f"{price:,.1f}원"
@@ -108,14 +153,15 @@ def format_market_data(data):
 
         day_str = f"{arrow(day_chg)}{abs(day_chg):.2f}%"
         month_str = f"월간 {arrow(month_chg)}{abs(month_chg):.2f}%" if month_chg is not None else "월간 -"
-        return f"{name}: {price_str}  {day_str}  ({month_str})"
+        stale = " [cached]" if status == "cached" else ""
+        return f"{name}: {price_str}  {day_str}  ({month_str}){stale}"
 
     lines = []
 
     us_names = ["S&P500", "나스닥", "다우", "필라델피아반도체"]
     us_available = [name for name in us_names if name in data]
     if us_available:
-        date_str = data[us_available[0]]["date"].strftime("%m/%d")
+        date_str = data[us_available[0]]["date"][5:].replace("-", "/")
         lines.append(f"🇺🇸미국 ({date_str} 기준)")
         for name in us_names:
             if name in data:
@@ -125,7 +171,7 @@ def format_market_data(data):
     kr_names = ["코스피", "코스닥"]
     kr_available = [name for name in kr_names if name in data]
     if kr_available:
-        date_str = data[kr_available[0]]["date"].strftime("%m/%d")
+        date_str = data[kr_available[0]]["date"][5:].replace("-", "/")
         lines.append(f"🇰🇷한국 ({date_str} 기준)")
         for name in kr_names:
             if name in data:
@@ -135,7 +181,7 @@ def format_market_data(data):
     macro_names = ["원달러", "WTI유가", "금"]
     macro_available = [name for name in macro_names if name in data]
     if macro_available:
-        date_str = data[macro_available[0]]["date"].strftime("%m/%d")
+        date_str = data[macro_available[0]]["date"][5:].replace("-", "/")
         lines.append(f"▪ 매크로 ({date_str} 기준)")
         for name in macro_names:
             if name in data:
@@ -145,7 +191,7 @@ def format_market_data(data):
     crypto_names = ["비트코인", "이더리움"]
     crypto_available = [name for name in crypto_names if name in data]
     if crypto_available:
-        date_str = data[crypto_available[0]]["date"].strftime("%m/%d")
+        date_str = data[crypto_available[0]]["date"][5:].replace("-", "/")
         lines.append(f"▪ 코인 ({date_str} 기준)")
         for name in crypto_names:
             if name in data:
@@ -403,6 +449,12 @@ def parse_rss_items(rss_url, limit=7):
     articles = []
     try:
         res = requests.get(rss_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        content_type = res.headers.get("Content-Type", "")
+        if res.status_code != 200:
+            raise RuntimeError(f"HTTP {res.status_code}")
+        if "xml" not in content_type and "rss" not in content_type and not res.text.lstrip().startswith("<"):
+            raise RuntimeError(f"비정상 응답: {content_type}")
+
         root = ET.fromstring(res.content)
         for item in root.findall('.//item')[:limit]:
             title = clean_text(item.findtext('title', ''))
@@ -477,6 +529,9 @@ def get_us_news():
         except Exception as e:
             print(f"미국 NewsAPI 오류: {e}")
 
+    if not articles:
+        return "미국 증시 시황 뉴스 수집 실패."
+
     articles_text = "\n".join(articles[:10])
     print(f"미국 뉴스 수집: {len(articles[:10])}건")
     session = "morning" if IS_MORNING else "afternoon"
@@ -506,7 +561,6 @@ def get_kr_news():
         )
 
     rss_urls.extend([
-        "https://www.yna.co.kr/rss/marketplus.xml",
         "https://www.yna.co.kr/rss/economy.xml",
     ])
 
@@ -541,7 +595,7 @@ def get_kr_news():
             print(f"한국 NewsAPI 오류: {e}")
 
     if not articles:
-        return "뉴스 수집 실패"
+        return "국내 증시 시황 뉴스 수집 실패."
 
     articles_text = "\n".join(articles[:10])
     print(f"한국 뉴스 수집: {len(articles[:10])}건")
@@ -601,8 +655,32 @@ if __name__ == "__main__":
     date_str = now_kst.strftime('%Y년 %m월 %d일 %H:%M')
 
     print("시장 데이터 수집 중...")
-    market_data = get_market_data()
-    market_block = format_market_data(market_data)
+    market_data, failed_items = get_market_data()
+
+    market_note = ""
+    market_block = ""
+
+    if market_data:
+        save_market_cache(market_data)
+
+        total_count = 11
+        fail_count = len(failed_items)
+
+        if fail_count > 0:
+            market_note = f"※ 시장 데이터 일부 수집 실패 ({fail_count}/{total_count})"
+        market_block = format_market_data(market_data)
+
+    else:
+        cache_payload = load_market_cache()
+        if cache_payload and cache_payload.get("data"):
+            market_data = cache_payload["data"]
+            for key in market_data:
+                market_data[key]["source_status"] = "cached"
+            market_note = f"※ 시장 데이터 실시간 수집 실패로 마지막 정상 수집값 사용 ({cache_payload['saved_at_kst']} KST)"
+            market_block = format_market_data(market_data)
+        else:
+            market_note = "※ 시장 데이터 실시간 수집 실패로 지수/환율/원자재 수치 제외"
+            market_block = ""
 
     print("미국 뉴스 수집 중...")
     us_summary = get_us_news()
@@ -610,10 +688,16 @@ if __name__ == "__main__":
     print("한국 뉴스 수집 중...")
     kr_summary = get_kr_news()
 
+    if market_block:
+        header_block = f"""{market_note}
+{market_block}""" if market_note else market_block
+    else:
+        header_block = market_note
+
     full_message = f"""{session_label} — {date_str} KST
 {DIVIDER}
 
-{market_block}
+{header_block}
 
 {DIVIDER}
 🇺🇸 미국 증시 시황
