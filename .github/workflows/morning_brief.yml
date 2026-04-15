@@ -12,6 +12,8 @@ on:
       timezone: "Asia/Seoul"
     - cron: '5 11 * * *'
       timezone: "Asia/Seoul"
+    - cron: '10 11 * * *'
+      timezone: "Asia/Seoul"
     - cron: '20 16 * * *'
       timezone: "Asia/Seoul"
   workflow_dispatch:
