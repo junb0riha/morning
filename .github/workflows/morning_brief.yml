@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: '30 23 * * *'   # KST 08:30 (UTC 23:30 전날)
     - cron: '30 0 * * *'    # KST 09:30 (UTC 00:30)
+    - cron: '40 0 * * *'    # KST 09:40 (UTC 00:40)
     - cron: '20 7 * * *'    # KST 16:20 (UTC 07:20)
   workflow_dispatch:
 
@@ -32,3 +33,5 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: python news_bot.py
+
+# resync 2026-04-15
