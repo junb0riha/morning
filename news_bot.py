@@ -119,21 +119,18 @@ def format_market_data(data):
     def arrow(v): return "▲" if v >= 0 else "▼"
 
     def fmt_price(name, p):
-        if name == "원달러":          return f"{p:,.1f}원"
-        if name in ("WTI유가","금"):   return f"${p:,.2f}"
-        if name in ("비트코인","이더리움"): return f"${p:,.0f}"
+        if name == "원달러":                    return f"{p:,.1f}원"
+        if name in ("WTI유가", "금"):            return f"${p:,.2f}"
+        if name in ("비트코인", "이더리움"):     return f"${p:,.0f}"
         if name in ("미10년금리","미2년금리","VIX","달러인덱스"): return f"{p:.2f}"
         return f"{p:,.2f}"
 
     def fmt_row(name, d):
-        p   = d["price"]
-        dc  = d["day_change"]
-        mc  = d["month_change"]
-        yc  = d["year_change"]
+        p  = d["price"]; dc = d["day_change"]
+        mc = d["month_change"]; yc = d["year_change"]
         stale = " [cached]" if d.get("source_status") == "cached" else ""
 
-        is_rate = name in ("미10년금리","미2년금리","VIX")
-        if is_rate:
+        if name in ("미10년금리","미2년금리","VIX"):
             def pt(chg): return p - p / (1 + chg/100) if chg is not None else None
             dpt = pt(dc); mpt = pt(mc); ypt = pt(yc)
             d_str = f"{'+' if dc>=0 else ''}{dpt:.2f}pt"
@@ -154,31 +151,69 @@ def format_market_data(data):
         return f"{title} ({date_str} 기준)\n{rows}\n"
 
     parts = [
-        section("🇺🇸미국",      ["S&P500","나스닥","다우","필라델피아반도체"]),
-        section("🇰🇷한국",      ["코스피","코스닥"]),
-        section("▪ 매크로",     ["원달러","달러인덱스","WTI유가","금"]),
+        section("🇺🇸미국",       ["S&P500","나스닥","다우","필라델피아반도체"]),
+        section("🇰🇷한국",       ["코스피","코스닥"]),
+        section("▪ 매크로",      ["원달러","달러인덱스","WTI유가","금"]),
         section("▪ 금리/변동성", ["미10년금리","미2년금리","VIX"]),
-        section("▪ 코인",       ["비트코인","이더리움"]),
+        section("▪ 코인",        ["비트코인","이더리움"]),
     ]
     return "\n".join(p for p in parts if p).strip()
 
 
-def parse_rss(url, limit=7):
+# ── 뉴스 수집 ─────────────────────────────────────────────
+
+# 세션별 기사 수집 기준 시각 (KST)
+# 오전 브리프: 전날 06:00 KST 이후 (미국 전일 마감 기사 커버)
+# 오후 브리프: 당일 15:20 KST 이후 (한국 장마감 직후)
+if IS_MORNING:
+    NEWS_CUTOFF_KST = (now_kst - timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
+else:
+    NEWS_CUTOFF_KST = now_kst.replace(hour=15, minute=20, second=0, microsecond=0)
+
+NEWS_CUTOFF_UTC = NEWS_CUTOFF_KST - timedelta(hours=9)
+print(f"뉴스 수집 기준: {NEWS_CUTOFF_KST.strftime('%Y-%m-%d %H:%M')} KST 이후")
+
+
+def parse_rss(url, limit=15, cutoff_utc=None):
     articles = []
     try:
         res = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0"})
         if res.status_code != 200:
             raise RuntimeError(f"HTTP {res.status_code}")
         root = ET.fromstring(res.content)
-        for item in root.findall('.//item')[:limit]:
+        items = root.findall('.//item')
+
+        filtered, all_items = [], []
+        for item in items[:limit]:
             title = clean_text(item.findtext('title',''))
             desc  = clean_text(item.findtext('description',''))
             pub   = clean_text(item.findtext('pubDate',''))
-            if title:
-                articles.append(f"- [{pub}] {title}: {desc}")
+            if not title:
+                continue
+            entry = f"- [{pub}] {title}: {desc}"
+            all_items.append(entry)
+
+            if cutoff_utc:
+                try:
+                    import calendar
+                    from email.utils import parsedate_to_datetime
+                    dt = parsedate_to_datetime(pub)
+                    if calendar.timegm(dt.utctimetuple()) >= calendar.timegm(cutoff_utc.utctimetuple()):
+                        filtered.append(entry)
+                except Exception:
+                    filtered.append(entry)
+            else:
+                filtered.append(entry)
+
+        if cutoff_utc and not filtered and all_items:
+            print(f"  cutoff 이후 기사 없음, 최신 5개 폴백: {url[:50]}")
+            return all_items[:5]
+
+        return filtered
+
     except Exception as e:
         print(f"RSS 오류: {url[:60]} / {e}")
-    return articles
+    return []
 
 
 def dedupe(articles):
@@ -197,6 +232,10 @@ def gnews_rss(query, lang="ko", country="KR"):
 
 
 def get_us_news():
+    # 미국 시황은 항상 전날 마감 기준 — 전날 21:00 KST (=12:00 ET) 이후
+    us_cutoff_kst = (now_kst - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
+    us_cutoff_utc = us_cutoff_kst - timedelta(hours=9)
+
     queries = [
         "US stocks close market wrap S&P 500 Nasdaq Dow",
         "Wall Street stocks close market recap",
@@ -206,7 +245,9 @@ def get_us_news():
         "https://feeds.marketwatch.com/marketwatch/topstories/",
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US",
     ]
-    return dedupe([a for url in urls for a in parse_rss(url)])
+    articles = dedupe([a for url in urls for a in parse_rss(url, cutoff_utc=us_cutoff_utc)])
+    print(f"미국 뉴스 수집: {len(articles)}건")
+    return articles
 
 
 def get_kr_news():
@@ -215,29 +256,36 @@ def get_kr_news():
         f"코스피 {suffix} 외국인 기관 환율",
         f"코스닥 {suffix} 외국인 기관 환율",
         f"국내 증시 {suffix} 시황 외국인 수급",
+        f"코스피 {suffix} 시황",
     ]
     urls = [gnews_rss(q) for q in queries] + [
         "https://www.yna.co.kr/rss/economy.xml",
         "https://finance.naver.com/news/news_list.naver?mode=LSS2D&section0=101&section1=258&rss=true",
         "https://ssl.pstatic.net/static/nf/rss/stock_market_rss.xml",
     ]
-    articles = dedupe([a for url in urls for a in parse_rss(url)])
+    articles = dedupe([a for url in urls for a in parse_rss(url, cutoff_utc=NEWS_CUTOFF_UTC)])
+    print(f"한국 뉴스 수집: {len(articles)}건")
 
-    if not articles and NEWS_API_KEY:
+    if len(articles) < 3 and NEWS_API_KEY:
         try:
+            from_dt = NEWS_CUTOFF_UTC.strftime("%Y-%m-%dT%H:%M:%SZ")
             q = requests.utils.quote(f"코스피 {suffix} 외국인 기관 환율 시황")
             res = requests.get(
-                f"https://newsapi.org/v2/everything?q={q}&language=ko&sortBy=publishedAt&pageSize=10&apiKey={NEWS_API_KEY}",
+                f"https://newsapi.org/v2/everything?q={q}&language=ko&sortBy=publishedAt"
+                f"&from={from_dt}&pageSize=10&apiKey={NEWS_API_KEY}",
                 timeout=10).json()
-            articles = dedupe([
+            extra = dedupe([
                 f"- [{a.get('publishedAt','')}] {clean_text(a.get('title',''))}: {clean_text(a.get('description',''))}"
                 for a in res.get('articles',[]) if a.get('title')
             ])
+            articles = dedupe(articles + extra)
+            print(f"NewsAPI 보완: 총 {len(articles)}건")
         except Exception as e:
             print(f"NewsAPI 오류: {e}")
     return articles
 
 
+# ── AI 요약 ───────────────────────────────────────────────
 SYSTEM_PROMPT = "당신은 한국 증권사 데일리 시황을 작성하는 시니어 애널리스트입니다. 반드시 한국어로만 답변하세요."
 
 RULES_COMMON = """
