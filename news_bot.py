@@ -29,6 +29,7 @@ now_kst = now_utc + timedelta(hours=9)
 hour_kst = now_kst.hour
 IS_MORNING = hour_kst < 12
 MONTH_START = now_kst.date().replace(day=1)
+YEAR_START = now_kst.date().replace(month=1, day=1)
 DIVIDER = '━━━━━'
 
 print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')} / {'오전 세션' if IS_MORNING else '오후 세션'}")
@@ -71,7 +72,7 @@ def fetch_history_with_retry(symbol, retries=3, base_sleep=2):
     for attempt in range(retries):
         try:
             ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="40d", auto_adjust=False)  # timeout 파라미터 제거
+            hist = ticker.history(period="400d", auto_adjust=False)
             if hist is not None and len(hist) >= 2:
                 return hist
             raise RuntimeError(f"{symbol} 히스토리 데이터 부족")
@@ -95,6 +96,10 @@ def get_market_data():
         "금": "GC=F",
         "비트코인": "BTC-USD",
         "이더리움": "ETH-USD",
+        "달러인덱스": "DX-Y.NYB",
+        "미10년금리": "^TNX",
+        "미2년금리": "^IRX",
+        "VIX": "^VIX",
     }
 
     results = {}
@@ -108,6 +113,7 @@ def get_market_data():
             curr_date = hist.index[-1].date()
             day_change = ((curr - prev) / prev) * 100
 
+            # MTD: 지난달 마지막 영업일
             month_price = None
             for i in range(len(hist) - 1, -1, -1):
                 d = hist.index[i].date()
@@ -115,13 +121,23 @@ def get_market_data():
                     month_price = float(hist['Close'].iloc[i])
                     break
 
+            # YTD: 작년 마지막 영업일
+            year_price = None
+            for i in range(len(hist) - 1, -1, -1):
+                d = hist.index[i].date()
+                if d < YEAR_START:
+                    year_price = float(hist['Close'].iloc[i])
+                    break
+
             month_change = ((curr - month_price) / month_price) * 100 if month_price else None
+            year_change = ((curr - year_price) / year_price) * 100 if year_price else None
 
             results[name] = {
                 "price": curr,
                 "date": curr_date.isoformat(),
                 "day_change": day_change,
                 "month_change": month_change,
+                "year_change": year_change,
                 "source_status": "live"
             }
 
@@ -140,26 +156,44 @@ def format_market_data(data):
         price = d["price"]
         day_chg = d["day_change"]
         month_chg = d["month_change"]
+        year_chg = d["year_change"]
         status = d.get("source_status", "live")
 
+        # 가격 포맷
         if name == "원달러":
             price_str = f"{price:,.1f}원"
         elif name in ["WTI유가", "금"]:
             price_str = f"${price:,.2f}"
         elif name in ["비트코인", "이더리움"]:
             price_str = f"${price:,.0f}"
+        elif name in ["미10년금리", "미2년금리", "VIX"]:
+            price_str = f"{price:.2f}"
+        elif name == "달러인덱스":
+            price_str = f"{price:.2f}"
         else:
             price_str = f"{price:,.2f}"
 
         day_str = f"{arrow(day_chg)}{abs(day_chg):.2f}%"
-        month_str = f"월간 {arrow(month_chg)}{abs(month_chg):.2f}%" if month_chg is not None else "월간 -"
+        mtd_str = f"MTD {arrow(month_chg)}{abs(month_chg):.2f}%" if month_chg is not None else "MTD -"
+        ytd_str = f"YTD {arrow(year_chg)}{abs(year_chg):.2f}%" if year_chg is not None else "YTD -"
         stale = " [cached]" if status == "cached" else ""
-        return f"{name}: {price_str}  {day_str}  ({month_str}){stale}"
+
+        # 금리/VIX는 MTD/YTD 변화율 대신 포인트 변화로 표시
+        if name in ["미10년금리", "미2년금리", "VIX"]:
+            day_pt = price - (price / (1 + day_chg / 100))
+            day_str = f"{'+' if day_chg >= 0 else ''}{day_pt:.2f}pt"
+            mtd_pt = (price - (price / (1 + month_chg / 100))) if month_chg else None
+            ytd_pt = (price - (price / (1 + year_chg / 100))) if year_chg else None
+            mtd_str = f"MTD {'+' if mtd_pt >= 0 else ''}{mtd_pt:.2f}pt" if mtd_pt is not None else "MTD -"
+            ytd_str = f"YTD {'+' if ytd_pt >= 0 else ''}{ytd_pt:.2f}pt" if ytd_pt is not None else "YTD -"
+
+        return f"{name}: {price_str}  {day_str}  ({mtd_str} / {ytd_str}){stale}"
 
     lines = []
 
+    # 미국 지수
     us_names = ["S&P500", "나스닥", "다우", "필라델피아반도체"]
-    us_available = [name for name in us_names if name in data]
+    us_available = [n for n in us_names if n in data]
     if us_available:
         date_str = data[us_available[0]]["date"][5:].replace("-", "/")
         lines.append(f"🇺🇸미국 ({date_str} 기준)")
@@ -168,8 +202,9 @@ def format_market_data(data):
                 lines.append(fmt(name, data[name]))
         lines.append("")
 
+    # 한국 지수
     kr_names = ["코스피", "코스닥"]
-    kr_available = [name for name in kr_names if name in data]
+    kr_available = [n for n in kr_names if n in data]
     if kr_available:
         date_str = data[kr_available[0]]["date"][5:].replace("-", "/")
         lines.append(f"🇰🇷한국 ({date_str} 기준)")
@@ -178,8 +213,9 @@ def format_market_data(data):
                 lines.append(fmt(name, data[name]))
         lines.append("")
 
-    macro_names = ["원달러", "WTI유가", "금"]
-    macro_available = [name for name in macro_names if name in data]
+    # 매크로 지표
+    macro_names = ["원달러", "달러인덱스", "WTI유가", "금"]
+    macro_available = [n for n in macro_names if n in data]
     if macro_available:
         date_str = data[macro_available[0]]["date"][5:].replace("-", "/")
         lines.append(f"▪ 매크로 ({date_str} 기준)")
@@ -188,8 +224,20 @@ def format_market_data(data):
                 lines.append(fmt(name, data[name]))
         lines.append("")
 
+    # 금리/변동성
+    rate_names = ["미10년금리", "미2년금리", "VIX"]
+    rate_available = [n for n in rate_names if n in data]
+    if rate_available:
+        date_str = data[rate_available[0]]["date"][5:].replace("-", "/")
+        lines.append(f"▪ 금리/변동성 ({date_str} 기준)")
+        for name in rate_names:
+            if name in data:
+                lines.append(fmt(name, data[name]))
+        lines.append("")
+
+    # 가상자산
     crypto_names = ["비트코인", "이더리움"]
-    crypto_available = [name for name in crypto_names if name in data]
+    crypto_available = [n for n in crypto_names if n in data]
     if crypto_available:
         date_str = data[crypto_available[0]]["date"][5:].replace("-", "/")
         lines.append(f"▪ 코인 ({date_str} 기준)")
@@ -220,8 +268,8 @@ def build_prompt(articles_text, market, session):
 - 뉴스에 없는 내용 추가 금지
 - 기사 간 내용이 상충할 경우, 종가 방향과 가장 직접 연결되는 재료만 채택
 - 장중 기사보다 마감 기사 우선
-- 3문장 이상 4문장 이하
-- 220자 이상 250자 이하
+- 3문장 이상 5문장 이하
+- 270자 이상 300자 이하
 
 [서술 순서]
 1. 증시 방향
@@ -258,8 +306,8 @@ def build_prompt(articles_text, market, session):
 - 장중 기사보다 마감 기사 우선
 - 외국인/기관/개인 수급 중 최소 1개 반드시 반영
 - 환율 수치가 기사별로 엇갈리면 숫자 직접 언급 금지
-- 3문장 이상 4문장 이하
-- 220자 이상 250자 이하
+- 3문장 이상 5문장 이하
+- 270자 이상 300자 이하
 
 [서술 순서]
 1. 증시 방향
@@ -309,10 +357,10 @@ def post_process_summary(text, market):
 
     text = " ".join(deduped)
 
-    if len(text) > 300:
-        cut = text[:300]
+    if len(text) > 350:
+        cut = text[:350]
         last_period = cut.rfind('.')
-        if last_period > 150:
+        if last_period > 200:
             text = cut[:last_period + 1]
 
     return text.strip()
@@ -329,7 +377,7 @@ def summarize_with_gemini(prompt_text):
                 "contents": [{"parts": [{"text": prompt_text}]}],
                 "generationConfig": {
                     "temperature": 0.2,
-                    "maxOutputTokens": 320
+                    "maxOutputTokens": 400
                 }
             },
             timeout=20
@@ -359,7 +407,7 @@ def summarize_with_groq(prompt_text):
                     {"role": "system", "content": "당신은 한국 증권사 데일리 시황을 작성하는 시니어 애널리스트입니다. 반드시 한국어로만 답변하세요."},
                     {"role": "user", "content": prompt_text}
                 ],
-                "max_tokens": 320,
+                "max_tokens": 400,
                 "temperature": 0.2
             },
             timeout=20
@@ -389,7 +437,7 @@ def summarize_with_gpt(prompt_text):
                     {"role": "system", "content": "당신은 한국 증권사 데일리 시황을 작성하는 시니어 애널리스트입니다. 반드시 한국어로만 답변하세요."},
                     {"role": "user", "content": prompt_text}
                 ],
-                "max_tokens": 320,
+                "max_tokens": 400,
                 "temperature": 0.2
             },
             timeout=20
@@ -419,12 +467,12 @@ def summarize(articles_text, market, session):
         if result:
             result = post_process_summary(result, market)
 
-            if len(result) < 210:
+            if len(result) < 260:
                 retry_prompt = base_prompt + """
 
 [재작성 지시]
-- 반드시 220자 이상 250자 이하
-- 반드시 3문장 이상 4문장 이하
+- 반드시 270자 이상 300자 이하
+- 반드시 3문장 이상 5문장 이하
 - 같은 의미 반복 금지
 - 한국 증시의 경우 수급 문장 1개 반드시 포함
 - 환율 숫자가 불명확하면 숫자 직접 언급 금지
@@ -436,7 +484,7 @@ def summarize(articles_text, market, session):
                         result = retry_result
 
             print(f"{engine_name} 요약 성공 / 길이: {len(result)}")
-            if len(result) >= 210:
+            if len(result) >= 260:
                 return result
 
             if not best_result or len(result) > len(best_result):
@@ -498,7 +546,6 @@ def get_us_news():
         rss_urls.append(
             f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl=en-US&gl=US&ceid=US:en"
         )
-
     rss_urls.extend([
         "https://feeds.marketwatch.com/marketwatch/topstories/",
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US",
@@ -559,7 +606,6 @@ def get_kr_news():
         rss_urls.append(
             f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl=ko&gl=KR&ceid=KR:ko"
         )
-
     rss_urls.extend([
         "https://www.yna.co.kr/rss/economy.xml",
     ])
@@ -660,7 +706,7 @@ if __name__ == "__main__":
         save_market_cache(market_data)
         fail_count = len(failed_items)
         if fail_count > 0:
-            market_note = f"※ 시장 데이터 일부 수집 실패 ({fail_count}/11)"
+            market_note = f"※ 시장 데이터 일부 수집 실패 ({fail_count}/15)"
         market_block = format_market_data(market_data)
     else:
         cache_payload = load_market_cache()
