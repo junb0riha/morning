@@ -313,26 +313,28 @@ def get_daily_fortune():
 
 [사주 정보]
 - 생년월일: 1992년 1월 19일
-- 태어난 시간: 오후 4시 30분 (申時)
+- 태어난 시간: 오후 4시 30분
 - 성별: 남성
 
 위 사주를 바탕으로 오늘({date_label}, {weekday}요일)의 일진과 운세 흐름을 분석하여 아래 형식으로 출력하세요.
 
 [출력 형식 - 반드시 4줄만]
-☀️ 종합운: (15~25자)
-💰 금전운: (15~25자)
-💼 직장운: (15~25자)
-🌹 애정운: (15~25자)
+☀️ 종합운: (50자 이상 100자 이하)
+💰 금전운: (50자 이상 100자 이하)
+💼 직장운: (50자 이상 100자 이하)
+🌹 애정운: (50자 이상 100자 이하)
 
 [규칙]
 - 사주 일간과 오늘 일진의 관계를 반영한 현실적인 운세
-- 점술적 표현 허용 (기운, 흐름, 길일, 충, 합 등)
+- 한자 사용 절대 금지 (甲乙丙丁, 申時, 壬水 등 모든 한자 금지)
+- 한글로만 서술 (기운, 흐름, 길일, 조화 등 한글 표현 사용)
 - 긍정적이되 과장 없이
+- 각 줄 반드시 50자 이상 100자 이하
 - 4줄 외 어떤 설명도 출력 금지"""
 
     for fn in [call_gemini, call_groq, call_gpt]:
         try:
-            result = fn(prompt, temp=0.7, max_tok=300)
+            result = fn(prompt, temp=0.7, max_tok=800)
             if result:
                 print("운세 생성 완료")
                 return result.strip()
@@ -450,6 +452,50 @@ def summarize(articles_text, market, session):
     return best or "요약 실패"
 
 
+def get_watchlist(us_text, kr_text):
+    if not us_text and not kr_text:
+        return "뉴스 수집 실패로 관심 종목 추출 불가"
+
+    prompt = f"""당신은 한국 증권사 애널리스트입니다. 아래 뉴스에서 오늘(또는 가장 최근 거래일) 주목할 만한 종목을 추출하세요.
+
+[추출 기준]
+- 뉴스에 직접 언급된 종목 중, 시황에 영향이 크거나 투자자 관심이 높은 종목
+- 미국 2~3개, 한국 2~3개 선정
+- 각 종목별로 "왜 주목해야 하는지" 핵심 이유 1줄 (40자 이내)
+
+[출력 형식 - 아래 형식을 정확히 지킬 것]
+🇺🇸 미국
+- [종목명(한글)]: [주목 사유]
+- [종목명(한글)]: [주목 사유]
+
+🇰🇷 한국
+- [종목명(한글)]: [주목 사유]
+- [종목명(한글)]: [주목 사유]
+
+[규칙]
+- 뉴스에 명확히 언급된 종목만 선택, 추측 금지
+- 반드시 한글 종목명 사용 (예: 엔비디아, 테슬라, 삼성전자, SK하이닉스)
+- 미국 종목 괄호에 영문 티커 병기 (예: 엔비디아(NVDA))
+- 40자 이내 짧고 명료하게
+- 다른 설명, 제목, 번호 금지
+
+[미국 뉴스]
+{us_text[:2000]}
+
+[한국 뉴스]
+{kr_text[:2000]}"""
+
+    for fn in [call_gemini, call_groq, call_gpt]:
+        try:
+            result = fn(prompt, temp=0.3, max_tok=600)
+            if result:
+                print("관심 종목 추출 완료")
+                return result.strip()
+        except Exception:
+            pass
+    return "관심 종목 추출 실패"
+
+
 def send_telegram(message):
     res = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -517,6 +563,9 @@ if __name__ == "__main__":
     print("운세 생성 중...")
     fortune = get_daily_fortune()
 
+    print("관심 종목 추출 중...")
+    watchlist = get_watchlist(us_text, kr_text)
+
     header = f"{market_note}\n{market_block}" if market_note else market_block
     full_message = f"""brief - {date_str}
 {DIVIDER}
@@ -536,7 +585,12 @@ if __name__ == "__main__":
 {DIVIDER}
 🇰🇷 한국 증시
 {DIVIDER}
-{kr_summary}"""
+{kr_summary}
+
+{DIVIDER}
+🎯 오늘의 관심 종목
+{DIVIDER}
+{watchlist}"""
 
     send_telegram(full_message)
     send_email(f"brief - {date_str}", full_message)
