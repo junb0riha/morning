@@ -3,10 +3,12 @@ import re
 import html
 import json
 import time
+import calendar
 import requests
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 import yfinance as yf
 import smtplib
 from email.mime.text import MIMEText
@@ -25,17 +27,15 @@ EMAIL_RECEIVER   = 'junbo119.shim@samsung.com'
 CACHE_FILE = Path("market_cache.json")
 DIVIDER    = '━━━━━'
 
-now_utc    = datetime.utcnow()
-now_kst    = now_utc + timedelta(hours=9)
-hour_kst   = now_kst.hour
-IS_MORNING = hour_kst < 12
-MONTH_START = now_kst.date().replace(day=1)
+now_utc     = datetime.utcnow()
+now_kst     = now_utc + timedelta(hours=9)
+IS_MORNING  = now_kst.hour < 12
 YEAR_START  = now_kst.date().replace(month=1, day=1)
 
 print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')} / {'오전' if IS_MORNING else '오후'} 세션")
 
 
-def clean_text(text: str) -> str:
+def clean_text(text):
     if not text:
         return ""
     text = html.unescape(text)
@@ -51,7 +51,6 @@ TICKERS = {
     "비트코인": "BTC-USD", "이더리움": "ETH-USD",
     "미10년금리": "^TNX", "미2년금리": "^IRX", "VIX": "^VIX",
 }
-
 
 def fetch_history(symbol, retries=3):
     for attempt in range(retries):
@@ -69,27 +68,23 @@ def get_market_data():
     results, failed = {}, []
     for name, symbol in TICKERS.items():
         try:
-            hist  = fetch_history(symbol)
-            curr  = float(hist['Close'].iloc[-1])
-            prev  = float(hist['Close'].iloc[-2])
+            hist = fetch_history(symbol)
+            curr = float(hist['Close'].iloc[-1])
+            prev = float(hist['Close'].iloc[-2])
             cdate = hist.index[-1].date()
             day_chg = (curr - prev) / prev * 100
 
-            def last_price_before(cutoff):
-                for i in range(len(hist)-1, -1, -1):
-                    if hist.index[i].date() < cutoff:
-                        return float(hist['Close'].iloc[i])
-                return None
-
-            mp = last_price_before(MONTH_START)
-            yp = last_price_before(YEAR_START)
+            yp = None
+            for i in range(len(hist)-1, -1, -1):
+                if hist.index[i].date() < YEAR_START:
+                    yp = float(hist['Close'].iloc[i])
+                    break
 
             results[name] = {
-                "price":        curr,
-                "date":         cdate.isoformat(),
-                "day_change":   day_chg,
-                "month_change": (curr - mp) / mp * 100 if mp else None,
-                "year_change":  (curr - yp) / yp * 100 if yp else None,
+                "price":         curr,
+                "date":          cdate.isoformat(),
+                "day_change":    day_chg,
+                "year_change":   (curr - yp) / yp * 100 if yp else None,
                 "source_status": "live",
             }
         except Exception as e:
@@ -101,12 +96,8 @@ def get_market_data():
 def save_cache(data):
     try:
         CACHE_FILE.write_text(
-            json.dumps(
-                {"saved_at_kst": now_kst.strftime("%Y-%m-%d %H:%M"), "data": data},
-                ensure_ascii=False
-            ),
-            encoding="utf-8"
-        )
+            json.dumps({"saved_at_kst": now_kst.strftime("%Y-%m-%d %H:%M"), "data": data},
+                       ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         print(f"캐시 저장 오류: {e}")
 
@@ -121,115 +112,75 @@ def load_cache():
 
 
 def format_market_data(data):
-    def arrow(v):
-        return "▲" if v >= 0 else "▼"
+    def arrow(v): return "▲" if v >= 0 else "▼"
 
     def fmt_price(name, p):
-        if name == "원달러":
-            return f"{p:,.1f}원"
-        if name in ("WTI유가", "금"):
-            return f"${p:,.2f}"
-        if name in ("비트코인", "이더리움"):
-            return f"${p:,.0f}"
-        if name in ("미10년금리", "미2년금리", "VIX", "달러인덱스"):
-            return f"{p:.2f}"
+        if name == "원달러":                    return f"{p:,.1f}원"
+        if name in ("WTI유가", "금"):            return f"${p:,.2f}"
+        if name in ("비트코인", "이더리움"):     return f"${p:,.0f}"
+        if name in ("미10년금리","미2년금리","VIX","달러인덱스"): return f"{p:.2f}"
         return f"{p:,.2f}"
 
     def fmt_row(name, d):
-        p  = d["price"]
-        dc = d["day_change"]
-        mc = d["month_change"]
-        yc = d["year_change"]
+        p, dc, yc = d["price"], d["day_change"], d["year_change"]
         stale = " [cached]" if d.get("source_status") == "cached" else ""
 
-        if name in ("미10년금리", "미2년금리", "VIX"):
-            def pt(chg):
-                return p - p / (1 + chg / 100) if chg is not None else None
-
-            dpt = pt(dc)
-            mpt = pt(mc)
-            ypt = pt(yc)
-
-            d_str = f"{'+' if dpt >= 0 else ''}{dpt:.2f}pt"
-            m_str = f"MTD {'+' if mpt >= 0 else ''}{mpt:.2f}pt" if mpt is not None else "MTD -"
-            y_str = f"YTD {'+' if ypt >= 0 else ''}{ypt:.2f}pt" if ypt is not None else "YTD -"
+        if name in ("미10년금리","미2년금리","VIX"):
+            d_pt = p - p / (1 + dc/100)
+            y_pt = p - p / (1 + yc/100) if yc is not None else None
+            d_str = f"{'+' if dc>=0 else ''}{d_pt:.2f}pt"
+            y_str = f"YTD {'+' if y_pt>=0 else ''}{y_pt:.2f}pt" if y_pt is not None else "YTD -"
         else:
             d_str = f"{arrow(dc)}{abs(dc):.2f}%"
-            m_str = f"MTD {arrow(mc)}{abs(mc):.2f}%" if mc is not None else "MTD -"
             y_str = f"YTD {arrow(yc)}{abs(yc):.2f}%" if yc is not None else "YTD -"
 
-        return f"{name}: {fmt_price(name, p)}  {d_str}  ({m_str} / {y_str}){stale}"
+        return f"{name} {fmt_price(name,p)}  {d_str}  {y_str}{stale}"
 
-    def section(title, names):
-        available = [n for n in names if n in data]
-        if not available:
-            return ""
-        date_str = data[available[0]]["date"][5:].replace("-", "/")
+    def section(emoji, title, names):
+        avail = [n for n in names if n in data]
+        if not avail: return ""
+        date_str = data[avail[0]]["date"][5:].replace("-","/")
         rows = "\n".join(fmt_row(n, data[n]) for n in names if n in data)
-        return f"{title} ({date_str} 기준)\n{rows}\n"
+        return f"{emoji} {title}  ({date_str})\n{rows}\n"
 
     parts = [
-        section("🇺🇸미국",       ["S&P500", "나스닥", "다우", "필라델피아반도체"]),
-        section("🇰🇷한국",       ["코스피", "코스닥"]),
-        section("▪ 매크로",      ["원달러", "달러인덱스", "WTI유가", "금"]),
-        section("▪ 금리/변동성", ["미10년금리", "미2년금리", "VIX"]),
-        section("▪ 코인",        ["비트코인", "이더리움"]),
+        section("🇺🇸", "미국",     ["S&P500","나스닥","다우","필라델피아반도체"]),
+        section("🇰🇷", "한국",     ["코스피","코스닥"]),
+        section("💱", "매크로",    ["원달러","달러인덱스","WTI유가","금"]),
+        section("📊", "금리/변동성", ["미10년금리","미2년금리","VIX"]),
+        section("₿", "코인",      ["비트코인","이더리움"]),
     ]
     return "\n".join(p for p in parts if p).strip()
 
 
-# ── 세션별 국내 뉴스 컷오프 시간 계산 ─────────────────────────────
-
-def get_news_cutoff_kst():
-    """
-    오전 브리프: 전일 06:00 KST 이후
-    오후 브리프: 당일 15:20 KST 이후
-    단, 오후 브리프가 15:20 이전에 실행되면 미래 컷오프가 생기지 않도록
-    전일 15:20 KST 기준으로 후퇴
-    """
-    if IS_MORNING:
-        return (now_kst - timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
-
-    today_cutoff = now_kst.replace(hour=15, minute=20, second=0, microsecond=0)
-    if now_kst >= today_cutoff:
-        return today_cutoff
-
-    print("주의: 오후 브리프가 15:20 이전 실행됨 → 전일 15:20 기준으로 대체")
-    return (now_kst - timedelta(days=1)).replace(hour=15, minute=20, second=0, microsecond=0)
-
-
-NEWS_CUTOFF_KST = get_news_cutoff_kst()
+if IS_MORNING:
+    NEWS_CUTOFF_KST = (now_kst - timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
+else:
+    NEWS_CUTOFF_KST = now_kst.replace(hour=15, minute=20, second=0, microsecond=0)
 NEWS_CUTOFF_UTC = NEWS_CUTOFF_KST - timedelta(hours=9)
-print(f"뉴스 수집 기준: {NEWS_CUTOFF_KST.strftime('%Y-%m-%d %H:%M')} KST 이후")
+print(f"뉴스 cutoff: {NEWS_CUTOFF_KST.strftime('%Y-%m-%d %H:%M')} KST 이후")
 
 
-def parse_rss(url, limit=15, cutoff_utc=None, allow_fallback=True):
+def parse_rss(url, limit=15, cutoff_utc=None):
     try:
-        res = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        res = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0"})
         if res.status_code != 200:
             raise RuntimeError(f"HTTP {res.status_code}")
-
         root = ET.fromstring(res.content)
         items = root.findall('.//item')
 
         filtered, all_items = [], []
-
         for item in items[:limit]:
-            title = clean_text(item.findtext('title', ''))
-            desc  = clean_text(item.findtext('description', ''))
-            pub   = clean_text(item.findtext('pubDate', ''))
-
+            title = clean_text(item.findtext('title',''))
+            desc  = clean_text(item.findtext('description',''))
+            pub   = clean_text(item.findtext('pubDate',''))
             if not title:
                 continue
-
             entry = f"- [{pub}] {title}: {desc}"
             all_items.append(entry)
 
             if cutoff_utc:
                 try:
-                    import calendar
-                    from email.utils import parsedate_to_datetime
-
                     dt = parsedate_to_datetime(pub)
                     if calendar.timegm(dt.utctimetuple()) >= calendar.timegm(cutoff_utc.utctimetuple()):
                         filtered.append(entry)
@@ -238,23 +189,19 @@ def parse_rss(url, limit=15, cutoff_utc=None, allow_fallback=True):
             else:
                 filtered.append(entry)
 
-        if cutoff_utc and not filtered:
-            if allow_fallback and all_items:
-                print(f"cutoff 이후 기사 없음, 최신 5개 폴백: {url[:50]}")
-                return all_items[:5]
-            return []
-
+        if cutoff_utc and not filtered and all_items:
+            print(f"  cutoff 이후 기사 없음, 최신 5개 폴백: {url[:50]}")
+            return all_items[:5]
         return filtered
-
     except Exception as e:
         print(f"RSS 오류: {url[:60]} / {e}")
-        return []
+    return []
 
 
 def dedupe(articles):
     seen, out = set(), []
     for item in articles:
-        key = re.sub(r'\s+', '', item.split("] ", 1)[-1].split(":", 1)[0]).lower()
+        key = re.sub(r'\s+','', item.split("] ",1)[-1].split(":",1)[0]).lower()
         if key and key not in seen:
             seen.add(key)
             out.append(item)
@@ -267,24 +214,17 @@ def gnews_rss(query, lang="ko", country="KR"):
 
 
 def get_us_news():
-    us_cutoff_kst = (now_kst - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
-    us_cutoff_utc = us_cutoff_kst - timedelta(hours=9)
-
+    us_cutoff_utc = (now_kst - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0) - timedelta(hours=9)
     queries = [
         "US stocks close market wrap S&P 500 Nasdaq Dow",
         "Wall Street stocks close market recap",
         "US market close treasury yields oil risk sentiment",
     ]
-    urls = [gnews_rss(q, "en", "US") for q in queries] + [
+    urls = [gnews_rss(q,"en","US") for q in queries] + [
         "https://feeds.marketwatch.com/marketwatch/topstories/",
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US",
     ]
-
-    articles = dedupe([
-        a for url in urls
-        for a in parse_rss(url, cutoff_utc=us_cutoff_utc, allow_fallback=True)
-    ])
-
+    articles = dedupe([a for url in urls for a in parse_rss(url, cutoff_utc=us_cutoff_utc)])
     print(f"미국 뉴스 수집: {len(articles)}건")
     return articles
 
@@ -302,16 +242,7 @@ def get_kr_news():
         "https://finance.naver.com/news/news_list.naver?mode=LSS2D&section0=101&section1=258&rss=true",
         "https://ssl.pstatic.net/static/nf/rss/stock_market_rss.xml",
     ]
-
-    # 오전 브리프는 폴백 허용
-    # 오후 브리프는 반드시 장마감 이후 기사만 허용
-    allow_fallback = True if IS_MORNING else False
-
-    articles = dedupe([
-        a for url in urls
-        for a in parse_rss(url, cutoff_utc=NEWS_CUTOFF_UTC, allow_fallback=allow_fallback)
-    ])
-
+    articles = dedupe([a for url in urls for a in parse_rss(url, cutoff_utc=NEWS_CUTOFF_UTC)])
     print(f"한국 뉴스 수집: {len(articles)}건")
 
     if len(articles) < 3 and NEWS_API_KEY:
@@ -321,25 +252,94 @@ def get_kr_news():
             res = requests.get(
                 f"https://newsapi.org/v2/everything?q={q}&language=ko&sortBy=publishedAt"
                 f"&from={from_dt}&pageSize=10&apiKey={NEWS_API_KEY}",
-                timeout=10
-            ).json()
-
+                timeout=10).json()
             extra = dedupe([
-                f"- [{a.get('publishedAt', '')}] {clean_text(a.get('title', ''))}: {clean_text(a.get('description', ''))}"
-                for a in res.get('articles', []) if a.get('title')
+                f"- [{a.get('publishedAt','')}] {clean_text(a.get('title',''))}: {clean_text(a.get('description',''))}"
+                for a in res.get('articles',[]) if a.get('title')
             ])
-
             articles = dedupe(articles + extra)
             print(f"NewsAPI 보완: 총 {len(articles)}건")
         except Exception as e:
             print(f"NewsAPI 오류: {e}")
-
     return articles
 
 
-# ── AI 요약 ───────────────────────────────────────────────
-
 SYSTEM_PROMPT = "당신은 한국 증권사 데일리 시황을 작성하는 시니어 애널리스트입니다. 반드시 한국어로만 답변하세요."
+
+def call_gemini(prompt, temp=0.2, max_tok=400):
+    if not GEMINI_API_KEY: return None
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        r = requests.post(url, json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": temp, "maxOutputTokens": max_tok}
+        }, timeout=20).json()
+        return r['candidates'][0]['content']['parts'][0]['text'].strip()
+    except Exception as e:
+        print(f"Gemini 오류: {e}"); return None
+
+
+def call_groq(prompt, temp=0.2, max_tok=400):
+    if not GROQ_API_KEY: return None
+    try:
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type":"application/json"},
+            json={"model":"llama-3.3-70b-versatile",
+                  "messages":[{"role":"system","content":SYSTEM_PROMPT},{"role":"user","content":prompt}],
+                  "max_tokens":max_tok,"temperature":temp}, timeout=20).json()
+        return r['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print(f"Groq 오류: {e}"); return None
+
+
+def call_gpt(prompt, temp=0.2, max_tok=400):
+    if not OPENAI_API_KEY: return None
+    try:
+        r = requests.post("https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type":"application/json"},
+            json={"model":"gpt-4o-mini",
+                  "messages":[{"role":"system","content":SYSTEM_PROMPT},{"role":"user","content":prompt}],
+                  "max_tokens":max_tok,"temperature":temp}, timeout=20).json()
+        return r['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print(f"GPT 오류: {e}"); return None
+
+
+def get_daily_fortune():
+    date_label = now_kst.strftime("%Y년 %m월 %d일")
+    weekday = ["월","화","수","목","금","토","일"][now_kst.weekday()]
+
+    prompt = f"""당신은 사주명리학 전문가입니다.
+
+[사주 정보]
+- 생년월일: 1992년 1월 19일
+- 태어난 시간: 오후 4시 30분 (申時)
+- 성별: 남성
+
+위 사주를 바탕으로 오늘({date_label}, {weekday}요일)의 일진과 운세 흐름을 분석하여 아래 형식으로 출력하세요.
+
+[출력 형식 - 반드시 4줄만]
+☀️ 종합운: (15~25자)
+💰 금전운: (15~25자)
+💼 직장운: (15~25자)
+🌹 애정운: (15~25자)
+
+[규칙]
+- 사주 일간과 오늘 일진의 관계를 반영한 현실적인 운세
+- 점술적 표현 허용 (기운, 흐름, 길일, 충, 합 등)
+- 긍정적이되 과장 없이
+- 4줄 외 어떤 설명도 출력 금지"""
+
+    for fn in [call_gemini, call_groq, call_gpt]:
+        try:
+            result = fn(prompt, temp=0.7, max_tok=300)
+            if result:
+                print("운세 생성 완료")
+                return result.strip()
+        except Exception:
+            pass
+    return "오늘의 운세를 불러오지 못했습니다."
+
 
 RULES_COMMON = """
 [문체 기준]
@@ -372,7 +372,6 @@ RETRY_SUFFIX = """
 - 환율 숫자 불명확 시 직접 언급 금지
 """
 
-
 def build_prompt(articles_text, market, session):
     if market == "us":
         first_sent = '첫 문장은 반드시 "미국 증시 상승 마감." 또는 "미국 증시 하락 마감." 으로 시작'
@@ -391,103 +390,41 @@ def build_prompt(articles_text, market, session):
 {articles_text}"""
 
 
-def call_gemini(prompt):
-    if not GEMINI_API_KEY:
-        return None
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        r = requests.post(
-            url,
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 400}
-            },
-            timeout=20
-        ).json()
-        return r['candidates'][0]['content']['parts'][0]['text'].strip()
-    except Exception as e:
-        print(f"Gemini 오류: {e}")
-        return None
-
-
-def call_groq(prompt):
-    if not GROQ_API_KEY:
-        return None
-    try:
-        r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ],
-                "max_tokens": 400,
-                "temperature": 0.2
-            },
-            timeout=20
-        ).json()
-        return r['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        print(f"Groq 오류: {e}")
-        return None
-
-
-def call_gpt(prompt):
-    if not OPENAI_API_KEY:
-        return None
-    try:
-        r = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ],
-                "max_tokens": 400,
-                "temperature": 0.2
-            },
-            timeout=20
-        ).json()
-        return r['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        print(f"GPT 오류: {e}")
-        return None
-
-
 def post_process(text, market):
-    if not text:
-        return "요약 실패"
-
-    text = clean_text(text).replace('"', '').replace("'", '')
+    if not text: return "요약 실패"
+    text = clean_text(text).replace('"','').replace("'",'')
     text = re.sub(r'\s+', ' ', text).strip()
-
-    # 모델이 붙인 헤더 제거
     text = re.sub(r'^(미국|국내|한국) 증시 시황\s*[::-]?\s*', '', text)
 
-    # 너무 길면 자르되 문장 끝 기준으로 자르기
+    prefix_map = {
+        "us": ("미국 증시 상승 마감.", "미국 증시 하락 마감."),
+        "kr": ("국내 증시 상승 마감.", "국내 증시 하락 마감."),
+    }
+    up_prefix, dn_prefix = prefix_map[market]
+    if not (text.startswith(up_prefix) or text.startswith(dn_prefix)):
+        if any(x in text for x in ["상승","반등","강세","오름세"]):
+            text = up_prefix + " " + text
+        elif any(x in text for x in ["하락","약세","내림세"]):
+            text = dn_prefix + " " + text
+
+    sentences = [s.strip() for s in re.split(r'(?<=\.)\s+', text) if s.strip()]
+    seen, deduped = set(), []
+    for s in sentences:
+        if s not in seen:
+            seen.add(s); deduped.append(s)
+    text = " ".join(deduped)
+
     if len(text) > 350:
         cut = text[:350]
         lp = cut.rfind('.')
         if lp > 200:
-            text = cut[:lp + 1]
-
+            text = cut[:lp+1]
     return text.strip()
 
 
 def summarize(articles_text, market, session):
     if not articles_text:
         return "뉴스 수집 실패"
-
     prompt = build_prompt(articles_text, market, session)
     engines = [("Gemini", call_gemini), ("Groq", call_groq), ("GPT", call_gpt)]
     best = None
@@ -496,7 +433,6 @@ def summarize(articles_text, market, session):
         result = fn(prompt)
         if not result:
             continue
-
         result = post_process(result, market)
 
         if len(result) < 270:
@@ -507,100 +443,45 @@ def summarize(articles_text, market, session):
                     result = retry
 
         print(f"{name} 요약 완료 / {len(result)}자")
-
         if len(result) >= 270:
             return result
-
         if not best or len(result) > len(best):
             best = result
-
     return best or "요약 실패"
 
 
-# ── 방향 강제 보정 ─────────────────────────────────────────────
-
-def get_kr_market_direction(market_data):
-    kospi = market_data.get("코스피", {}).get("day_change")
-    kosdaq = market_data.get("코스닥", {}).get("day_change")
-
-    vals = [v for v in [kospi, kosdaq] if v is not None]
-    if not vals:
-        return None
-
-    avg = sum(vals) / len(vals)
-    return "up" if avg >= 0 else "down"
-
-
-def force_prefix(text, market, direction=None):
-    text = clean_text(text).replace('"', '').replace("'", '')
-    text = re.sub(r'\s+', ' ', text).strip()
-
-    if market == "us":
-        up_prefix, dn_prefix = "미국 증시 상승 마감.", "미국 증시 하락 마감."
-    else:
-        up_prefix, dn_prefix = "국내 증시 상승 마감.", "국내 증시 하락 마감."
-
-    if direction == "up":
-        prefix = up_prefix
-    elif direction == "down":
-        prefix = dn_prefix
-    else:
-        return text
-
-    # 기존 첫 문장 제거 후 재부착
-    text = re.sub(r'^(미국|국내|한국) 증시 (상승|하락) 마감\.\s*', '', text)
-
-    return f"{prefix} {text}".strip()
-
-
 def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("텔레그램 설정 없음, 스킵")
-        return
-
     res = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "disable_web_page_preview": True
-        },
-        timeout=15
-    )
+        json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True},
+        timeout=15)
     print("텔레그램:", res.status_code)
 
 
 def send_email(subject, body):
     if not EMAIL_SENDER or not EMAIL_PASSWORD:
-        print("이메일 설정 없음, 스킵")
-        return
-
+        print("이메일 설정 없음, 스킵"); return
     try:
         msg = MIMEMultipart('alternative')
         msg['Subject'] = subject
         msg['From']    = EMAIL_SENDER
         msg['To']      = EMAIL_RECEIVER
-
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
         msg.attach(MIMEText(
             f'<html><body><pre style="font-family:Malgun Gothic,Arial,sans-serif;'
             f'font-size:14px;line-height:2.0;white-space:pre-wrap">{body}</pre></body></html>',
-            'html', 'utf-8'
-        ))
-
+            'html', 'utf-8'))
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
             smtp.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
-
         print("이메일 전송 완료")
     except Exception as e:
         print(f"이메일 오류: {e}")
 
 
 if __name__ == "__main__":
-    session_label = "오전 브리프" if IS_MORNING else "오후 브리프"
-    date_str      = now_kst.strftime('%Y년 %m월 %d일 %H:%M')
-    session       = "morning" if IS_MORNING else "afternoon"
+    date_str = now_kst.strftime("'%y.%m.%d %H:%M")
+    session  = "morning" if IS_MORNING else "afternoon"
 
     print("시장 데이터 수집 중...")
     market_data, failed = get_market_data()
@@ -626,33 +507,37 @@ if __name__ == "__main__":
     print("미국 뉴스 수집 중...")
     us_articles = get_us_news()
     us_text     = "\n".join(us_articles[:10]) if us_articles else ""
-    us_summary_raw = summarize(us_text, "us", session) if us_text else "미국 증시 시황 뉴스 수집 실패."
-    us_summary = us_summary_raw
+    us_summary  = summarize(us_text, "us", session) if us_text else "미국 증시 시황 뉴스 수집 실패."
 
     print("한국 뉴스 수집 중...")
     kr_articles = get_kr_news()
     kr_text     = "\n".join(kr_articles[:10]) if kr_articles else ""
-    kr_summary_raw = summarize(kr_text, "kr", session) if kr_text else "국내 증시 시황 뉴스 수집 실패."
+    kr_summary  = summarize(kr_text, "kr", session) if kr_text else "국내 증시 시황 뉴스 수집 실패."
 
-    kr_direction = get_kr_market_direction(market_data) if market_data else None
-    kr_summary = force_prefix(kr_summary_raw, "kr", kr_direction)
+    print("운세 생성 중...")
+    fortune = get_daily_fortune()
 
     header = f"{market_note}\n{market_block}" if market_note else market_block
-    full_message = f"""{session_label} — {date_str} KST
+    full_message = f"""brief - {date_str}
 {DIVIDER}
+🔮 오늘의 운세
+{fortune}
 
+{DIVIDER}
+📈 마켓 데이터
+{DIVIDER}
 {header}
 
 {DIVIDER}
-🇺🇸 미국 증시 시황
+🇺🇸 미국 증시
 {DIVIDER}
 {us_summary}
 
 {DIVIDER}
-🇰🇷 한국 증시 시황
+🇰🇷 한국 증시
 {DIVIDER}
 {kr_summary}"""
 
     send_telegram(full_message)
-    send_email(f"[시황 브리프] {date_str} - {session_label}", full_message)
+    send_email(f"brief - {date_str}", full_message)
     print("전송 완료")
