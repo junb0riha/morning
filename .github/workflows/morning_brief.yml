@@ -2,10 +2,10 @@ name: Morning News Brief
 
 on:
   schedule:
-    # 07:15 KST (오전 브리프) = 22:15 UTC 전날
-    - cron: '15 22 * * *'
-    # 17:10 KST (오후 브리프) = 08:10 UTC 당일
-    - cron: '10 8 * * *'
+    # 07:07 KST (오전 브리프) = 22:07 UTC 전날
+    - cron: '7 22 * * *'
+    # 17:17 KST (오후 브리프) = 08:17 UTC 당일
+    - cron: '17 8 * * *'
   workflow_dispatch:
 
 jobs:
