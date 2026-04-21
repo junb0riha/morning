@@ -156,12 +156,12 @@ def format_market_data(data):
 if IS_MORNING:
     NEWS_CUTOFF_KST = (now_kst - timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
 else:
-    NEWS_CUTOFF_KST = now_kst.replace(hour=15, minute=20, second=0, microsecond=0)
+    NEWS_CUTOFF_KST = now_kst.replace(hour=16, minute=0, second=0, microsecond=0)
 NEWS_CUTOFF_UTC = NEWS_CUTOFF_KST - timedelta(hours=9)
 print(f"뉴스 cutoff: {NEWS_CUTOFF_KST.strftime('%Y-%m-%d %H:%M')} KST 이후")
 
 
-def parse_rss(url, limit=15, cutoff_utc=None):
+def parse_rss(url, limit=15, cutoff_utc=None, allow_fallback=True):
     try:
         res = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0"})
         if res.status_code != 200:
@@ -189,7 +189,7 @@ def parse_rss(url, limit=15, cutoff_utc=None):
             else:
                 filtered.append(entry)
 
-        if cutoff_utc and not filtered and all_items:
+        if cutoff_utc and not filtered and all_items and allow_fallback:
             print(f"  cutoff 이후 기사 없음, 최신 5개 폴백: {url[:50]}")
             return all_items[:5]
         return filtered
@@ -242,7 +242,7 @@ def get_kr_news():
         "https://finance.naver.com/news/news_list.naver?mode=LSS2D&section0=101&section1=258&rss=true",
         "https://ssl.pstatic.net/static/nf/rss/stock_market_rss.xml",
     ]
-    articles = dedupe([a for url in urls for a in parse_rss(url, cutoff_utc=NEWS_CUTOFF_UTC)])
+    articles = dedupe([a for url in urls for a in parse_rss(url, cutoff_utc=NEWS_CUTOFF_UTC, allow_fallback=False)])
     print(f"한국 뉴스 수집: {len(articles)}건")
 
     if len(articles) < 3 and NEWS_API_KEY:
