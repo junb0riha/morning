@@ -22,7 +22,11 @@ OPENAI_API_KEY   = os.environ.get('OPENAI_API_KEY', '').strip()
 GEMINI_API_KEY   = os.environ.get('GEMINI_API_KEY', '').strip()
 EMAIL_SENDER     = os.environ.get('EMAIL_SENDER', '').strip()
 EMAIL_PASSWORD   = os.environ.get('EMAIL_PASSWORD', '').strip()
-EMAIL_RECEIVER   = 'junbo119.shim@samsung.com'
+EMAIL_RECEIVERS  = [
+    'junbo119.shim@samsung.com',
+    'm.bk.cho@samsung.com',
+    'hs03.lee@samsung.com',
+]
 
 CACHE_FILE = Path("market_cache.json")
 DIVIDER    = '━━━━━'
@@ -111,15 +115,16 @@ def load_cache():
     return None
 
 
+def fmt_price(name, p):
+    if name == "원달러":                    return f"{p:,.1f}원"
+    if name in ("WTI유가", "금"):            return f"${p:,.2f}"
+    if name in ("비트코인", "이더리움"):     return f"${p:,.0f}"
+    if name in ("미10년금리","미2년금리","VIX","달러인덱스"): return f"{p:.2f}"
+    return f"{p:,.2f}"
+
+
 def format_market_data(data):
     def arrow(v): return "▲" if v >= 0 else "▼"
-
-    def fmt_price(name, p):
-        if name == "원달러":                    return f"{p:,.1f}원"
-        if name in ("WTI유가", "금"):            return f"${p:,.2f}"
-        if name in ("비트코인", "이더리움"):     return f"${p:,.0f}"
-        if name in ("미10년금리","미2년금리","VIX","달러인덱스"): return f"{p:.2f}"
-        return f"{p:,.2f}"
 
     def fmt_row(name, d):
         p, dc, yc = d["price"], d["day_change"], d["year_change"]
@@ -305,44 +310,6 @@ def call_gpt(prompt, temp=0.2, max_tok=400):
         print(f"GPT 오류: {e}"); return None
 
 
-def get_daily_fortune():
-    date_label = now_kst.strftime("%Y년 %m월 %d일")
-    weekday = ["월","화","수","목","금","토","일"][now_kst.weekday()]
-
-    prompt = f"""당신은 사주명리학 전문가입니다.
-
-[사주 정보]
-- 생년월일: 1992년 1월 19일
-- 태어난 시간: 오후 4시 30분
-- 성별: 남성
-
-위 사주를 바탕으로 오늘({date_label}, {weekday}요일)의 일진과 운세 흐름을 분석하여 아래 형식으로 출력하세요.
-
-[출력 형식 - 반드시 4줄만]
-☀️ 종합운: (50자 이상 100자 이하)
-💰 금전운: (50자 이상 100자 이하)
-💼 직장운: (50자 이상 100자 이하)
-🌹 애정운: (50자 이상 100자 이하)
-
-[규칙]
-- 사주 일간과 오늘 일진의 관계를 반영한 현실적인 운세
-- 한자 사용 절대 금지 (甲乙丙丁, 申時, 壬水 등 모든 한자 금지)
-- 한글로만 서술 (기운, 흐름, 길일, 조화 등 한글 표현 사용)
-- 긍정적이되 과장 없이
-- 각 줄 반드시 50자 이상 100자 이하
-- 4줄 외 어떤 설명도 출력 금지"""
-
-    for fn in [call_gemini, call_groq, call_gpt]:
-        try:
-            result = fn(prompt, temp=0.7, max_tok=800)
-            if result:
-                print("운세 생성 완료")
-                return result.strip()
-        except Exception:
-            pass
-    return "오늘의 운세를 불러오지 못했습니다."
-
-
 RULES_COMMON = """
 [문체 기준]
 - 짧고 단정한 기사체 (증권사 데일리 시황)
@@ -452,48 +419,143 @@ def summarize(articles_text, market, session):
     return best or "요약 실패"
 
 
-def get_watchlist(us_text, kr_text):
-    if not us_text and not kr_text:
-        return "뉴스 수집 실패로 관심 종목 추출 불가"
+def build_email_html(market_data, market_note, us_summary, kr_summary, date_str, session):
+    """이메일용 HTML 빌드 - 깔끔한 카드 디자인"""
 
-    prompt = f"""당신은 한국 증권사 애널리스트입니다. 아래 뉴스에서 오늘(또는 가장 최근 거래일) 주목할 만한 종목을 추출하세요.
+    SECTIONS = [
+        ("🇺🇸", "미국", ["S&P500","나스닥","다우","필라델피아반도체"]),
+        ("🇰🇷", "한국", ["코스피","코스닥"]),
+        ("💱", "매크로", ["원달러","달러인덱스","WTI유가","금"]),
+        ("📊", "금리/변동성", ["미10년금리","미2년금리","VIX"]),
+        ("₿", "코인", ["비트코인","이더리움"]),
+    ]
 
-[추출 기준]
-- 뉴스에 직접 언급된 종목 중, 시황에 영향이 크거나 투자자 관심이 높은 종목
-- 미국 2~3개, 한국 2~3개 선정
-- 각 종목별로 "왜 주목해야 하는지" 핵심 이유 1줄 (40자 이내)
+    def fmt_change(name, dc, yc):
+        if name in ("미10년금리","미2년금리","VIX"):
+            return None  # pt 단위는 별도 처리
+        return dc, yc
 
-[출력 형식 - 아래 형식을 정확히 지킬 것]
-🇺🇸 미국
-- [종목명(한글)]: [주목 사유]
-- [종목명(한글)]: [주목 사유]
+    def color_for(v):
+        # 한국식: 상승=빨강, 하락=파랑
+        if v is None: return "#888"
+        return "#d32f2f" if v >= 0 else "#1976d2"
 
-🇰🇷 한국
-- [종목명(한글)]: [주목 사유]
-- [종목명(한글)]: [주목 사유]
+    def arrow(v):
+        if v is None: return ""
+        return "▲" if v >= 0 else "▼"
 
-[규칙]
-- 뉴스에 명확히 언급된 종목만 선택, 추측 금지
-- 반드시 한글 종목명 사용 (예: 엔비디아, 테슬라, 삼성전자, SK하이닉스)
-- 미국 종목 괄호에 영문 티커 병기 (예: 엔비디아(NVDA))
-- 40자 이내 짧고 명료하게
-- 다른 설명, 제목, 번호 금지
+    market_rows_html = ""
+    if market_data:
+        for emoji, title, names in SECTIONS:
+            avail = [n for n in names if n in market_data]
+            if not avail:
+                continue
+            date_short = market_data[avail[0]]["date"][5:].replace("-","/")
 
-[미국 뉴스]
-{us_text[:2000]}
+            market_rows_html += f"""
+            <tr><td colspan="4" style="padding:18px 16px 8px 16px;background:#f8f9fa;border-top:1px solid #e9ecef;">
+                <span style="font-size:14px;font-weight:600;color:#212529;">{emoji} {title}</span>
+                <span style="font-size:11px;color:#868e96;margin-left:8px;">({date_short})</span>
+            </td></tr>
+            """
 
-[한국 뉴스]
-{kr_text[:2000]}"""
+            for name in names:
+                if name not in market_data:
+                    continue
+                d = market_data[name]
+                p, dc, yc = d["price"], d["day_change"], d["year_change"]
+                stale = " <span style='color:#adb5bd;font-size:10px;'>[cached]</span>" if d.get("source_status") == "cached" else ""
 
-    for fn in [call_gemini, call_groq, call_gpt]:
-        try:
-            result = fn(prompt, temp=0.3, max_tok=600)
-            if result:
-                print("관심 종목 추출 완료")
-                return result.strip()
-        except Exception:
-            pass
-    return "관심 종목 추출 실패"
+                if name in ("미10년금리","미2년금리","VIX"):
+                    d_pt = p - p / (1 + dc/100)
+                    y_pt = p - p / (1 + yc/100) if yc is not None else None
+                    d_str = f"{'+' if dc>=0 else ''}{d_pt:.2f}pt"
+                    y_str = f"{'+' if y_pt>=0 else ''}{y_pt:.2f}pt" if y_pt is not None else "-"
+                    d_color = color_for(dc)
+                    y_color = color_for(y_pt)
+                else:
+                    d_str = f"{arrow(dc)} {abs(dc):.2f}%"
+                    y_str = f"{arrow(yc)} {abs(yc):.2f}%" if yc is not None else "-"
+                    d_color = color_for(dc)
+                    y_color = color_for(yc)
+
+                market_rows_html += f"""
+                <tr>
+                    <td style="padding:10px 16px;border-bottom:1px solid #f1f3f5;font-size:13px;color:#212529;">{name}{stale}</td>
+                    <td style="padding:10px 8px;border-bottom:1px solid #f1f3f5;font-size:13px;text-align:right;color:#212529;font-variant-numeric:tabular-nums;">{fmt_price(name,p)}</td>
+                    <td style="padding:10px 8px;border-bottom:1px solid #f1f3f5;font-size:13px;text-align:right;color:{d_color};font-weight:500;font-variant-numeric:tabular-nums;">{d_str}</td>
+                    <td style="padding:10px 16px;border-bottom:1px solid #f1f3f5;font-size:12px;text-align:right;color:{y_color};font-variant-numeric:tabular-nums;">YTD {y_str}</td>
+                </tr>
+                """
+
+    market_note_html = ""
+    if market_note:
+        market_note_html = f'<div style="padding:10px 16px;background:#fff3cd;color:#856404;font-size:12px;border-bottom:1px solid #ffeaa7;">{market_note}</div>'
+
+    session_label = "오전 브리프" if session == "morning" else "오후 브리프"
+
+    html_body = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>brief - {date_str}</title>
+</head>
+<body style="margin:0;padding:0;background:#f1f3f5;font-family:'Malgun Gothic','Apple SD Gothic Neo','맑은 고딕',-apple-system,BlinkMacSystemFont,sans-serif;color:#212529;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f3f5;padding:24px 12px;">
+<tr><td align="center">
+<table width="640" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+
+<!-- 헤더 -->
+<tr><td style="padding:24px 24px 16px 24px;background:linear-gradient(135deg,#212529 0%,#343a40 100%);">
+    <div style="color:#adb5bd;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;">DAILY MARKET BRIEF</div>
+    <div style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-0.5px;">{date_str}</div>
+    <div style="color:#868e96;font-size:12px;margin-top:4px;">{session_label}</div>
+</td></tr>
+
+<!-- 마켓 데이터 -->
+<tr><td style="padding:0;">
+    <div style="padding:20px 24px 12px 24px;border-bottom:2px solid #212529;">
+        <span style="font-size:16px;font-weight:700;color:#212529;">📈 마켓 데이터</span>
+    </div>
+    {market_note_html}
+    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        {market_rows_html if market_rows_html else '<tr><td style="padding:20px;text-align:center;color:#868e96;font-size:13px;">시장 데이터 수집 실패</td></tr>'}
+    </table>
+</td></tr>
+
+<!-- 미국 증시 -->
+<tr><td style="padding:0;">
+    <div style="padding:24px 24px 12px 24px;border-bottom:2px solid #212529;border-top:8px solid #f8f9fa;">
+        <span style="font-size:16px;font-weight:700;color:#212529;">🇺🇸 미국 증시</span>
+    </div>
+    <div style="padding:20px 24px;font-size:14px;line-height:1.8;color:#343a40;">
+        {us_summary}
+    </div>
+</td></tr>
+
+<!-- 한국 증시 -->
+<tr><td style="padding:0;">
+    <div style="padding:24px 24px 12px 24px;border-bottom:2px solid #212529;border-top:8px solid #f8f9fa;">
+        <span style="font-size:16px;font-weight:700;color:#212529;">🇰🇷 한국 증시</span>
+    </div>
+    <div style="padding:20px 24px;font-size:14px;line-height:1.8;color:#343a40;">
+        {kr_summary}
+    </div>
+</td></tr>
+
+<!-- 푸터 -->
+<tr><td style="padding:20px 24px;background:#f8f9fa;text-align:center;border-top:1px solid #e9ecef;">
+    <div style="font-size:11px;color:#868e96;">자동 생성된 데일리 브리프 · {now_kst.strftime('%Y-%m-%d %H:%M')} KST</div>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>"""
+
+    return html_body
 
 
 def send_telegram(message):
@@ -504,23 +566,20 @@ def send_telegram(message):
     print("텔레그램:", res.status_code)
 
 
-def send_email(subject, body):
+def send_email(subject, plain_body, html_body):
     if not EMAIL_SENDER or not EMAIL_PASSWORD:
         print("이메일 설정 없음, 스킵"); return
     try:
         msg = MIMEMultipart('alternative')
         msg['Subject'] = subject
         msg['From']    = EMAIL_SENDER
-        msg['To']      = EMAIL_RECEIVER
-        msg.attach(MIMEText(body, 'plain', 'utf-8'))
-        msg.attach(MIMEText(
-            f'<html><body><pre style="font-family:Malgun Gothic,Arial,sans-serif;'
-            f'font-size:14px;line-height:2.0;white-space:pre-wrap">{body}</pre></body></html>',
-            'html', 'utf-8'))
+        msg['To']      = ", ".join(EMAIL_RECEIVERS)
+        msg.attach(MIMEText(plain_body, 'plain', 'utf-8'))
+        msg.attach(MIMEText(html_body, 'html', 'utf-8'))
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            smtp.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
-        print("이메일 전송 완료")
+            smtp.sendmail(EMAIL_SENDER, EMAIL_RECEIVERS, msg.as_string())
+        print(f"이메일 전송 완료 ({len(EMAIL_RECEIVERS)}명)")
     except Exception as e:
         print(f"이메일 오류: {e}")
 
@@ -560,18 +619,9 @@ if __name__ == "__main__":
     kr_text     = "\n".join(kr_articles[:10]) if kr_articles else ""
     kr_summary  = summarize(kr_text, "kr", session) if kr_text else "국내 증시 시황 뉴스 수집 실패."
 
-    print("운세 생성 중...")
-    fortune = get_daily_fortune()
-
-    print("관심 종목 추출 중...")
-    watchlist = get_watchlist(us_text, kr_text)
-
+    # ===== 텔레그램용 plain text (기존과 동일) =====
     header = f"{market_note}\n{market_block}" if market_note else market_block
-    full_message = f"""brief - {date_str}
-{DIVIDER}
-🔮 오늘의 운세
-{fortune}
-
+    telegram_message = f"""brief - {date_str}
 {DIVIDER}
 📈 마켓 데이터
 {DIVIDER}
@@ -585,13 +635,11 @@ if __name__ == "__main__":
 {DIVIDER}
 🇰🇷 한국 증시
 {DIVIDER}
-{kr_summary}
+{kr_summary}"""
 
-{DIVIDER}
-🎯 오늘의 관심 종목
-{DIVIDER}
-{watchlist}"""
+    # ===== 이메일용 HTML =====
+    email_html = build_email_html(market_data, market_note, us_summary, kr_summary, date_str, session)
 
-    send_telegram(full_message)
-    send_email(f"brief - {date_str}", full_message)
+    send_telegram(telegram_message)
+    send_email(f"[brief] {date_str}", telegram_message, email_html)
     print("전송 완료")
