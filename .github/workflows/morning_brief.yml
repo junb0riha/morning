@@ -1,66 +1,37 @@
-name: ETF 경쟁사 모니터링 (KODEX ETF기획팀)
+name: Morning News Brief
 
 on:
   schedule:
-    - cron: '0 1 * * *'   # 매일 10:00 KST
-    - cron: '0 8 * * *'   # 매일 17:00 KST
+    - cron: '33 7 * * *'
+      timezone: "Asia/Seoul"
+    - cron: '22 16 * * *'
+      timezone: "Asia/Seoul"
+    - cron: '30 22 * * *'
+      timezone: "Asia/Seoul"
   workflow_dispatch:
-    inputs:
-      run_mode:
-        description: '실행 모드 (morning / evening)'
-        required: false
-        default: 'morning'
 
 jobs:
-  monitor:
+  send-news:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
     steps:
-      - name: 레포 체크아웃
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Python 3.11 셋업
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 의존성 설치
-        run: pip install requests feedparser beautifulsoup4 lxml
+      - name: Install dependencies
+        run: pip install requests yfinance
 
-      - name: 실행 모드 결정
-        id: set_mode
-        run: |
-          HOUR=$(date -u +%H)
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ github.event.inputs.run_mode }}" >> $GITHUB_OUTPUT
-          elif [ "$HOUR" = "01" ]; then
-            echo "mode=morning" >> $GITHUB_OUTPUT
-          elif [ "$HOUR" = "08" ]; then
-            echo "mode=evening" >> $GITHUB_OUTPUT
-          else
-            echo "Unexpected scheduled hour: $HOUR"
-            exit 1
-          fi
-
-      - name: 실행 정보 확인
-        run: |
-          echo "event_name=${{ github.event_name }}"
-          echo "utc_now=$(date -u)"
-          echo "kst_now=$(TZ=Asia/Seoul date)"
-          echo "run_mode=${{ steps.set_mode.outputs.mode }}"
-
-      - name: 경쟁사 모니터링 실행
+      - name: Run news bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PW: ${{ secrets.GMAIL_APP_PW }}
-          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
-          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-          RUN_MODE: ${{ steps.set_mode.outputs.mode }}
-        run: python monitor.py
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        run: python news_bot.py
