@@ -2,8 +2,6 @@ name: Morning News Brief
 
 on:
   schedule:
-    - cron: '0 10 * * *'
-      timezone: "Asia/Seoul"
     - cron: '0 17 * * *'
       timezone: "Asia/Seoul"
   workflow_dispatch:
@@ -21,13 +19,6 @@ jobs:
 
       - name: Install dependencies
         run: pip install requests yfinance
-
-      - name: 실행 정보 확인
-        run: |
-          echo "event_name=${{ github.event_name }}"
-          echo "schedule=${{ github.event.schedule }}"
-          echo "utc_now=$(date -u)"
-          echo "kst_now=$(TZ=Asia/Seoul date)"
 
       - name: Run news bot
         env:
