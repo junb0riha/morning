@@ -6,7 +6,7 @@ import time
 import requests
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import yfinance as yf
 import smtplib
@@ -25,21 +25,22 @@ EMAIL_RECEIVER = 'junbo119.shim@samsung.com'
 
 CACHE_FILE = Path("market_cache.json")
 
-now_utc = datetime.utcnow()
-now_kst = now_utc + timedelta(hours=9)
+KST = timezone(timedelta(hours=9))
+now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+now_kst = now_utc.astimezone(KST)
 MONTH_START = now_kst.date().replace(day=1)
 YEAR_START = now_kst.date().replace(month=1, day=1)
 DIVIDER = '━━━━━'
 
-# 시간 기준
-# 미국 뉴스: 당일 KST 06:00 이후 기사
-# 한국 뉴스: 당일 KST 15:30 이후 기사
+# 뉴스 시간 필터
+# 미국: 당일 KST 06:00 이후 게재 기사만 (전일 미국장 마감 시황)
+# 한국: 당일 KST 15:30 이후 게재 기사만 (당일 마감 시황)
 US_NEWS_CUTOFF_KST = now_kst.replace(hour=6, minute=0, second=0, microsecond=0)
 KR_NEWS_CUTOFF_KST = now_kst.replace(hour=15, minute=30, second=0, microsecond=0)
 
 print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')}")
-print(f"미국 뉴스 기준: {US_NEWS_CUTOFF_KST.strftime('%H:%M')} KST 이후")
-print(f"한국 뉴스 기준: {KR_NEWS_CUTOFF_KST.strftime('%H:%M')} KST 이후")
+print(f"미국 뉴스 cutoff: {US_NEWS_CUTOFF_KST.strftime('%Y-%m-%d %H:%M')}")
+print(f"한국 뉴스 cutoff: {KR_NEWS_CUTOFF_KST.strftime('%Y-%m-%d %H:%M')}")
 
 
 def clean_text(text: str) -> str:
@@ -51,11 +52,15 @@ def clean_text(text: str) -> str:
     return text
 
 
-def parse_pub_date(pub_date_str: str):
+def parse_pub_date_to_kst(pub_date_str: str):
     """RSS pubDate 문자열을 KST datetime으로 변환"""
+    if not pub_date_str:
+        return None
     try:
         dt = parsedate_to_datetime(pub_date_str)
-        return dt.astimezone(tz=None).replace(tzinfo=None) + timedelta(hours=9) - timedelta(hours=dt.utcoffset().total_seconds() / 3600 if dt.utcoffset() else 0)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(KST)
     except Exception:
         return None
 
@@ -472,7 +477,7 @@ def summarize(articles_text, market):
 
 
 def parse_rss_items(rss_url, cutoff_kst=None, limit=10):
-    """RSS 파싱 + cutoff_kst 이후 기사만 필터링"""
+    """RSS 파싱 + 시간 필터링"""
     articles = []
     try:
         res = requests.get(rss_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
@@ -493,13 +498,12 @@ def parse_rss_items(rss_url, cutoff_kst=None, limit=10):
             if not title:
                 continue
 
-            # 시간 필터링
-            if cutoff_kst and pub_date_str:
-                pub_kst = parse_pub_date(pub_date_str)
-                if pub_kst and pub_kst < cutoff_kst:
-                    continue
+            pub_kst = parse_pub_date_to_kst(pub_date_str)
+            if cutoff_kst and pub_kst and pub_kst < cutoff_kst:
+                continue
 
-            articles.append(f"- [{pub_date_str}] {title}: {description}")
+            pub_display = pub_kst.strftime('%Y-%m-%d %H:%M KST') if pub_kst else pub_date_str
+            articles.append(f"- [{pub_display}] {title}: {description}")
             count += 1
 
     except Exception as e:
@@ -523,12 +527,12 @@ def dedupe_articles_by_title(articles):
 
 
 def get_us_news():
-    """전영업일 미국 마감 기사 - 당일 KST 06:00 이후 수집"""
+    """전영업일 미국 증시 마감 기사 (당일 KST 06:00 이후 게재된 것)"""
     queries = [
         "US stocks close market wrap S&P 500 Nasdaq Dow",
         "Wall Street stocks close market recap",
-        "S&P 500 Nasdaq Dow close recap overnight",
-        "US market close oil risk sentiment",
+        "S&P 500 Nasdaq Dow close recap",
+        "US stock market close yesterday oil",
     ]
     rss_urls = [
         f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl=en-US&gl=US&ceid=US:en"
@@ -545,16 +549,18 @@ def get_us_news():
         articles.extend(items)
 
     articles = dedupe_articles_by_title(articles)
-    print(f"미국 뉴스 수집 (필터 후): {len(articles)}건")
+    print(f"미국 뉴스 (필터 후): {len(articles)}건")
 
-    # 필터 후 기사가 없으면 시간 필터 없이 재시도
-    if not articles:
-        print("미국 뉴스 시간 필터 결과 없음 → 필터 없이 재시도")
-        for rss_url in rss_urls[:4]:
-            items = parse_rss_items(rss_url, cutoff_kst=None, limit=5)
+    # 부족시 fallback: 시간 필터 12시간으로 완화
+    if len(articles) < 3:
+        print("미국 뉴스 부족 → 시간 필터 완화 (최근 24시간)")
+        relaxed_cutoff = now_kst - timedelta(hours=24)
+        articles = []
+        for rss_url in rss_urls:
+            items = parse_rss_items(rss_url, cutoff_kst=relaxed_cutoff, limit=7)
             articles.extend(items)
         articles = dedupe_articles_by_title(articles)
-        print(f"미국 뉴스 재수집: {len(articles)}건")
+        print(f"미국 뉴스 (완화 후): {len(articles)}건")
 
     if not articles:
         return "미국 증시 시황 뉴스 수집 실패."
@@ -564,11 +570,11 @@ def get_us_news():
 
 
 def get_kr_news():
-    """당일 KST 15:30 이후 국내 마감 기사 수집"""
+    """당일 국내 증시 마감 기사 (당일 KST 15:30 이후)"""
     queries = [
         "코스피 장 마감 외국인 기관 개인 환율",
         "코스닥 장 마감 외국인 기관 환율",
-        "국내 증시 마감 시황 외국인 수급 환율",
+        "국내 증시 마감 시황 외국인 수급",
         "코스피 코스닥 마감 시황 외국인 환율",
     ]
     rss_urls = [
@@ -583,16 +589,17 @@ def get_kr_news():
         articles.extend(items)
 
     articles = dedupe_articles_by_title(articles)
-    print(f"한국 뉴스 수집 (필터 후): {len(articles)}건")
+    print(f"한국 뉴스 (필터 후): {len(articles)}건")
 
-    # 필터 후 기사가 없으면 시간 필터 없이 재시도
-    if not articles:
-        print("한국 뉴스 시간 필터 결과 없음 → 필터 없이 재시도")
-        for rss_url in rss_urls[:4]:
-            items = parse_rss_items(rss_url, cutoff_kst=None, limit=5)
+    if len(articles) < 3:
+        print("한국 뉴스 부족 → 시간 필터 완화 (당일 12시 이후)")
+        relaxed_cutoff = now_kst.replace(hour=12, minute=0, second=0, microsecond=0)
+        articles = []
+        for rss_url in rss_urls:
+            items = parse_rss_items(rss_url, cutoff_kst=relaxed_cutoff, limit=7)
             articles.extend(items)
         articles = dedupe_articles_by_title(articles)
-        print(f"한국 뉴스 재수집: {len(articles)}건")
+        print(f"한국 뉴스 (완화 후): {len(articles)}건")
 
     if not articles:
         return "국내 증시 시황 뉴스 수집 실패."
@@ -602,7 +609,6 @@ def get_kr_news():
 
 
 def build_telegram_message(date_str, header_block, us_summary, kr_summary):
-    """텔레그램용 메시지 - 마크다운 볼드 적용"""
     return f"""*데일리 브리프 — {date_str} KST*
 {DIVIDER}
 
@@ -619,8 +625,7 @@ def build_telegram_message(date_str, header_block, us_summary, kr_summary):
 {kr_summary}"""
 
 
-def build_email_body(date_str, header_block, us_summary, kr_summary):
-    """이메일용 메시지 - plain text (별표 제거)"""
+def build_email_body_plain(date_str, header_block, us_summary, kr_summary):
     return f"""데일리 브리프 — {date_str} KST
 {DIVIDER}
 
@@ -649,7 +654,7 @@ def send_telegram(message):
     print("텔레그램 응답:", res.status_code, res.text[:200])
 
 
-def send_email(subject, body):
+def send_email(subject, title_line, market_block_text, us_summary, kr_summary):
     if not EMAIL_SENDER or not EMAIL_PASSWORD:
         print("이메일 설정 없음, 스킵")
         return
@@ -659,16 +664,97 @@ def send_email(subject, body):
         msg['From'] = EMAIL_SENDER
         msg['To'] = EMAIL_RECEIVER
 
-        text_part = MIMEText(body, 'plain', 'utf-8')
-        html_body = f"""
-<html>
-  <body>
-    <div style="font-family:'Malgun Gothic',Arial,sans-serif;font-size:14px;line-height:2.0;max-width:620px;margin:0 auto;padding:24px;color:#1a1a1a;">
-      <pre style="font-family:'Malgun Gothic',Arial,sans-serif;font-size:14px;line-height:2.0;white-space:pre-wrap;word-break:keep-all;">{body}</pre>
+        plain_body = f"""{title_line}
+
+{market_block_text}
+
+🇺🇸 미국 증시 시황
+{us_summary}
+
+🇰🇷 한국 증시 시황
+{kr_summary}"""
+        text_part = MIMEText(plain_body, 'plain', 'utf-8')
+
+        # 시장 데이터 카드화
+        market_lines = market_block_text.split("\n")
+        market_html_parts = []
+        current_section_title = ""
+        current_items = []
+
+        def flush_section():
+            nonlocal current_section_title, current_items
+            if current_section_title and current_items:
+                items_html = ""
+                for item in current_items:
+                    if ":" in item:
+                        name, rest = item.split(":", 1)
+                        if "▲" in rest or "+" in rest.split()[0]:
+                            color = "#d32f2f"
+                        elif "▼" in rest or rest.strip().startswith("-"):
+                            color = "#1565c0"
+                        else:
+                            color = "#424242"
+                        items_html += f"""
+                        <tr>
+                          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;font-weight:600;color:#1a1a1a;font-size:13px;">{name.strip()}</td>
+                          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;color:{color};font-size:13px;text-align:right;font-weight:500;">{rest.strip()}</td>
+                        </tr>"""
+                market_html_parts.append(f"""
+                <div style="background:#ffffff;border-radius:10px;padding:14px 16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);border:1px solid #e8e8e8;">
+                  <div style="font-size:14px;font-weight:700;color:#0d47a1;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #e3f2fd;">{current_section_title}</div>
+                  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">{items_html}</table>
+                </div>""")
+            current_section_title = ""
+            current_items = []
+
+        for line in market_lines:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("🇺🇸") or line.startswith("🇰🇷") or line.startswith("▪"):
+                flush_section()
+                current_section_title = line.replace("▪", "").strip()
+            elif line.startswith("※"):
+                market_html_parts.append(f"""
+                <div style="background:#fff3e0;border-left:3px solid #ff9800;padding:10px 14px;margin-bottom:12px;border-radius:6px;font-size:12px;color:#e65100;">{line}</div>""")
+            else:
+                current_items.append(line)
+        flush_section()
+
+        market_html = "\n".join(market_html_parts)
+
+        def briefing_card(flag, country, summary, accent):
+            return f"""
+            <div style="background:#ffffff;border-radius:12px;padding:20px 22px;margin-bottom:14px;box-shadow:0 2px 6px rgba(0,0,0,0.08);border-top:4px solid {accent};">
+              <div style="font-size:16px;font-weight:700;color:{accent};margin-bottom:12px;">{flag} {country} 증시 시황</div>
+              <div style="font-size:14px;line-height:1.8;color:#212121;letter-spacing:-0.2px;">{summary}</div>
+            </div>"""
+
+        us_card = briefing_card("🇺🇸", "미국", us_summary, "#1565c0")
+        kr_card = briefing_card("🇰🇷", "한국", kr_summary, "#c62828")
+
+        html_body = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f5f5f7;font-family:'Malgun Gothic','Apple SD Gothic Neo',Arial,sans-serif;">
+  <div style="max-width:640px;margin:0 auto;padding:24px 16px;">
+    <div style="background:linear-gradient(135deg,#1a237e 0%,#283593 100%);border-radius:14px;padding:24px 22px;margin-bottom:18px;color:#ffffff;box-shadow:0 4px 12px rgba(26,35,126,0.25);">
+      <div style="font-size:12px;opacity:0.85;letter-spacing:1px;margin-bottom:6px;">DAILY MARKET BRIEF</div>
+      <div style="font-size:20px;font-weight:700;letter-spacing:-0.5px;">{title_line}</div>
     </div>
-  </body>
-</html>
-"""
+    <div style="margin-bottom:18px;">
+      <div style="font-size:13px;font-weight:700;color:#616161;letter-spacing:1px;margin-bottom:10px;padding-left:4px;">📊 MARKET DATA</div>
+      {market_html}
+    </div>
+    <div style="margin-bottom:18px;">
+      <div style="font-size:13px;font-weight:700;color:#616161;letter-spacing:1px;margin-bottom:10px;padding-left:4px;">📰 MARKET BRIEFING</div>
+      {us_card}
+      {kr_card}
+    </div>
+    <div style="text-align:center;padding:18px 0;color:#9e9e9e;font-size:11px;border-top:1px solid #e0e0e0;margin-top:8px;">
+      Daily Market Brief · Automated Report
+    </div>
+  </div>
+</body></html>"""
         html_part = MIMEText(html_body, 'html', 'utf-8')
         msg.attach(text_part)
         msg.attach(html_part)
@@ -683,6 +769,7 @@ def send_email(subject, body):
 
 if __name__ == "__main__":
     date_str = now_kst.strftime('%Y년 %m월 %d일 %H:%M')
+    date_short = now_kst.strftime('%Y-%m-%d')
 
     print("시장 데이터 수집 중...")
     market_data, failed_items = get_market_data()
@@ -717,11 +804,10 @@ if __name__ == "__main__":
     header_block = f"{market_note}\n{market_block}" if market_note else market_block
 
     tg_message = build_telegram_message(date_str, header_block, us_summary, kr_summary)
-    email_body = build_email_body(date_str, header_block, us_summary, kr_summary)
-
     send_telegram(tg_message)
 
-    email_subject = f"[데일리 브리프] {date_str}"
-    send_email(email_subject, email_body)
+    title_line = f"데일리 브리프 — {date_str} KST"
+    email_subject = f"daily brief {date_short}"
+    send_email(email_subject, title_line, header_block, us_summary, kr_summary)
 
     print("전송 완료")
