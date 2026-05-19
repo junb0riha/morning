@@ -7,6 +7,7 @@ import requests
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 import yfinance as yf
 import smtplib
 from email.mime.text import MIMEText
@@ -30,7 +31,15 @@ MONTH_START = now_kst.date().replace(day=1)
 YEAR_START = now_kst.date().replace(month=1, day=1)
 DIVIDER = '━━━━━'
 
+# 시간 기준
+# 미국 뉴스: 당일 KST 06:00 이후 기사
+# 한국 뉴스: 당일 KST 15:30 이후 기사
+US_NEWS_CUTOFF_KST = now_kst.replace(hour=6, minute=0, second=0, microsecond=0)
+KR_NEWS_CUTOFF_KST = now_kst.replace(hour=15, minute=30, second=0, microsecond=0)
+
 print(f"현재 KST: {now_kst.strftime('%Y-%m-%d %H:%M')}")
+print(f"미국 뉴스 기준: {US_NEWS_CUTOFF_KST.strftime('%H:%M')} KST 이후")
+print(f"한국 뉴스 기준: {KR_NEWS_CUTOFF_KST.strftime('%H:%M')} KST 이후")
 
 
 def clean_text(text: str) -> str:
@@ -40,6 +49,15 @@ def clean_text(text: str) -> str:
     text = re.sub(r'<[^>]+>', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
+
+def parse_pub_date(pub_date_str: str):
+    """RSS pubDate 문자열을 KST datetime으로 변환"""
+    try:
+        dt = parsedate_to_datetime(pub_date_str)
+        return dt.astimezone(tz=None).replace(tzinfo=None) + timedelta(hours=9) - timedelta(hours=dt.utcoffset().total_seconds() / 3600 if dt.utcoffset() else 0)
+    except Exception:
+        return None
 
 
 def save_market_cache(data: dict):
@@ -169,7 +187,7 @@ def format_market_data(data):
         ytd_str = f"YTD {arrow(year_chg)}{abs(year_chg):.2f}%" if year_chg is not None else "YTD -"
 
         if name in ["미10년금리", "미2년금리", "VIX"]:
-            prev_price = price / (1 + day_chg / 100)
+            prev_price = price / (1 + day_chg / 100) if day_chg != -100 else price
             day_pt = price - prev_price
             day_str = f"{'+' if day_pt >= 0 else ''}{day_pt:.2f}pt"
             if month_chg is not None:
@@ -240,7 +258,7 @@ def format_market_data(data):
 
 def build_prompt(articles_text, market):
     if market == "us":
-        return f"""당신은 한국 증권사 데일리 시황을 작성하는 시니어 애널리스트입니다. (전일 미국 증시 마감 기사 기준)
+        return f"""당신은 한국 증권사 데일리 시황을 작성하는 시니어 애널리스트입니다. (전영업일 미국 증시 마감 기사 기준)
 
 [문체 기준]
 - 반드시 한국어로만 작성
@@ -249,7 +267,8 @@ def build_prompt(articles_text, market):
 - 첫 문장은 반드시 아래 둘 중 하나로 시작
   1) 미국 증시 상승 마감.
   2) 미국 증시 하락 마감.
-- 모든 문장은 명사형으로 종결 (예: "~마감.", "~확대.", "~유입.", "~부각.", "~우위.", "~반영.", "~강화.")
+- 모든 문장은 명사형으로 종결
+  (예: "~마감.", "~확대.", "~유입.", "~부각.", "~우위.", "~반영.", "~강화.", "~전환.")
 - "~했다", "~됩니다", "~이다", "~다" 등 서술형 종결 절대 금지
 - "가능성이 있다", "~할 수 있다" 등 추측 표현 절대 금지
 - 금리 관련 코멘트 금지
@@ -272,7 +291,7 @@ def build_prompt(articles_text, market):
 뉴스:
 {articles_text}"""
     else:
-        return f"""당신은 한국 증권사 데일리 시황을 작성하는 시니어 애널리스트입니다. (당일 오후 4시 이후 국내 증시 마감 기사 기준)
+        return f"""당신은 한국 증권사 데일리 시황을 작성하는 시니어 애널리스트입니다. (당일 오후 3시 30분 이후 국내 증시 마감 기사 기준)
 
 [문체 기준]
 - 반드시 한국어로만 작성
@@ -281,7 +300,8 @@ def build_prompt(articles_text, market):
 - 첫 문장은 반드시 아래 둘 중 하나로 시작
   1) 국내 증시 상승 마감.
   2) 국내 증시 하락 마감.
-- 모든 문장은 명사형으로 종결 (예: "~마감.", "~확대.", "~유입.", "~부각.", "~우위.", "~반영.", "~전환.")
+- 모든 문장은 명사형으로 종결
+  (예: "~마감.", "~확대.", "~유입.", "~부각.", "~우위.", "~반영.", "~전환.")
 - "~했다", "~됩니다", "~이다", "~다" 등 서술형 종결 절대 금지
 - "가능성이 있다", "~할 수 있다" 등 추측 표현 절대 금지
 - 금리 관련 코멘트 금지
@@ -310,7 +330,6 @@ def build_prompt(articles_text, market):
 def post_process_summary(text, market):
     if not text:
         return "요약 실패"
-
     text = clean_text(text)
     text = text.replace('"', '').replace("'", "")
     text = re.sub(r'\s+', ' ', text).strip()
@@ -336,7 +355,6 @@ def post_process_summary(text, market):
         if s not in seen:
             seen.add(s)
             deduped.append(s)
-
     text = " ".join(deduped)
 
     if len(text) > 350:
@@ -453,22 +471,37 @@ def summarize(articles_text, market):
     return best_result if best_result else "요약 실패"
 
 
-def parse_rss_items(rss_url, limit=7):
+def parse_rss_items(rss_url, cutoff_kst=None, limit=10):
+    """RSS 파싱 + cutoff_kst 이후 기사만 필터링"""
     articles = []
     try:
         res = requests.get(rss_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-        content_type = res.headers.get("Content-Type", "")
         if res.status_code != 200:
             raise RuntimeError(f"HTTP {res.status_code}")
+        content_type = res.headers.get("Content-Type", "")
         if "xml" not in content_type and "rss" not in content_type and not res.text.lstrip().startswith("<"):
             raise RuntimeError(f"비정상 응답: {content_type}")
+
         root = ET.fromstring(res.content)
-        for item in root.findall('.//item')[:limit]:
+        count = 0
+        for item in root.findall('.//item'):
+            if count >= limit:
+                break
             title = clean_text(item.findtext('title', ''))
             description = clean_text(item.findtext('description', ''))
-            pub_date = clean_text(item.findtext('pubDate', ''))
-            if title:
-                articles.append(f"- [{pub_date}] {title}: {description}")
+            pub_date_str = clean_text(item.findtext('pubDate', ''))
+            if not title:
+                continue
+
+            # 시간 필터링
+            if cutoff_kst and pub_date_str:
+                pub_kst = parse_pub_date(pub_date_str)
+                if pub_kst and pub_kst < cutoff_kst:
+                    continue
+
+            articles.append(f"- [{pub_date_str}] {title}: {description}")
+            count += 1
+
     except Exception as e:
         print(f"RSS 오류: {rss_url} / {e}")
     return articles
@@ -490,10 +523,11 @@ def dedupe_articles_by_title(articles):
 
 
 def get_us_news():
+    """전영업일 미국 마감 기사 - 당일 KST 06:00 이후 수집"""
     queries = [
         "US stocks close market wrap S&P 500 Nasdaq Dow",
         "Wall Street stocks close market recap",
-        "Nasdaq Dow S&P 500 close recap",
+        "S&P 500 Nasdaq Dow close recap overnight",
         "US market close oil risk sentiment",
     ]
     rss_urls = [
@@ -507,37 +541,30 @@ def get_us_news():
 
     articles = []
     for rss_url in rss_urls:
-        articles.extend(parse_rss_items(rss_url, limit=7))
-    articles = dedupe_articles_by_title(articles)
+        items = parse_rss_items(rss_url, cutoff_kst=US_NEWS_CUTOFF_KST, limit=7)
+        articles.extend(items)
 
-    if not articles and NEWS_API_KEY:
-        try:
-            url = (
-                f"https://newsapi.org/v2/everything"
-                f"?q={requests.utils.quote('US stocks close Wall Street market wrap oil')}"
-                f"&language=en&sortBy=publishedAt&pageSize=10&apiKey={NEWS_API_KEY}"
-            )
-            res = requests.get(url, timeout=10).json()
-            for a in res.get('articles', []):
-                title = clean_text(a.get('title', ''))
-                desc = clean_text(a.get('description', ''))
-                pub = clean_text(a.get('publishedAt', ''))
-                if title:
-                    articles.append(f"- [{pub}] {title}: {desc}")
-            articles = dedupe_articles_by_title(articles)
-        except Exception as e:
-            print(f"미국 NewsAPI 오류: {e}")
+    articles = dedupe_articles_by_title(articles)
+    print(f"미국 뉴스 수집 (필터 후): {len(articles)}건")
+
+    # 필터 후 기사가 없으면 시간 필터 없이 재시도
+    if not articles:
+        print("미국 뉴스 시간 필터 결과 없음 → 필터 없이 재시도")
+        for rss_url in rss_urls[:4]:
+            items = parse_rss_items(rss_url, cutoff_kst=None, limit=5)
+            articles.extend(items)
+        articles = dedupe_articles_by_title(articles)
+        print(f"미국 뉴스 재수집: {len(articles)}건")
 
     if not articles:
         return "미국 증시 시황 뉴스 수집 실패."
 
     articles_text = "\n".join(articles[:10])
-    print(f"미국 뉴스 수집: {len(articles[:10])}건")
     return summarize(articles_text, "us")
 
 
 def get_kr_news():
-    # 당일 오후 4시 이후 마감 기사 기준
+    """당일 KST 15:30 이후 국내 마감 기사 수집"""
     queries = [
         "코스피 장 마감 외국인 기관 개인 환율",
         "코스닥 장 마감 외국인 기관 환율",
@@ -552,33 +579,62 @@ def get_kr_news():
 
     articles = []
     for rss_url in rss_urls:
-        articles.extend(parse_rss_items(rss_url, limit=7))
-    articles = dedupe_articles_by_title(articles)
+        items = parse_rss_items(rss_url, cutoff_kst=KR_NEWS_CUTOFF_KST, limit=7)
+        articles.extend(items)
 
-    if not articles and NEWS_API_KEY:
-        try:
-            url = (
-                f"https://newsapi.org/v2/everything"
-                f"?q={requests.utils.quote('코스피 장 마감 외국인 기관 개인 환율 시황')}"
-                f"&language=ko&sortBy=publishedAt&pageSize=10&apiKey={NEWS_API_KEY}"
-            )
-            res = requests.get(url, timeout=10).json()
-            for a in res.get('articles', []):
-                title = clean_text(a.get('title', ''))
-                desc = clean_text(a.get('description', ''))
-                pub = clean_text(a.get('publishedAt', ''))
-                if title:
-                    articles.append(f"- [{pub}] {title}: {desc}")
-            articles = dedupe_articles_by_title(articles)
-        except Exception as e:
-            print(f"한국 NewsAPI 오류: {e}")
+    articles = dedupe_articles_by_title(articles)
+    print(f"한국 뉴스 수집 (필터 후): {len(articles)}건")
+
+    # 필터 후 기사가 없으면 시간 필터 없이 재시도
+    if not articles:
+        print("한국 뉴스 시간 필터 결과 없음 → 필터 없이 재시도")
+        for rss_url in rss_urls[:4]:
+            items = parse_rss_items(rss_url, cutoff_kst=None, limit=5)
+            articles.extend(items)
+        articles = dedupe_articles_by_title(articles)
+        print(f"한국 뉴스 재수집: {len(articles)}건")
 
     if not articles:
         return "국내 증시 시황 뉴스 수집 실패."
 
     articles_text = "\n".join(articles[:10])
-    print(f"한국 뉴스 수집: {len(articles[:10])}건")
     return summarize(articles_text, "kr")
+
+
+def build_telegram_message(date_str, header_block, us_summary, kr_summary):
+    """텔레그램용 메시지 - 마크다운 볼드 적용"""
+    return f"""*데일리 브리프 — {date_str} KST*
+{DIVIDER}
+
+{header_block}
+
+{DIVIDER}
+*🇺🇸 미국 증시 시황*
+{DIVIDER}
+{us_summary}
+
+{DIVIDER}
+*🇰🇷 한국 증시 시황*
+{DIVIDER}
+{kr_summary}"""
+
+
+def build_email_body(date_str, header_block, us_summary, kr_summary):
+    """이메일용 메시지 - plain text (별표 제거)"""
+    return f"""데일리 브리프 — {date_str} KST
+{DIVIDER}
+
+{header_block}
+
+{DIVIDER}
+🇺🇸 미국 증시 시황
+{DIVIDER}
+{us_summary}
+
+{DIVIDER}
+🇰🇷 한국 증시 시황
+{DIVIDER}
+{kr_summary}"""
 
 
 def send_telegram(message):
@@ -586,6 +642,7 @@ def send_telegram(message):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
+        "parse_mode": "Markdown",
         "disable_web_page_preview": True
     }
     res = requests.post(url, json=payload, timeout=15)
@@ -601,6 +658,7 @@ def send_email(subject, body):
         msg['Subject'] = subject
         msg['From'] = EMAIL_SENDER
         msg['To'] = EMAIL_RECEIVER
+
         text_part = MIMEText(body, 'plain', 'utf-8')
         html_body = f"""
 <html>
@@ -614,6 +672,7 @@ def send_email(subject, body):
         html_part = MIMEText(html_body, 'html', 'utf-8')
         msg.attach(text_part)
         msg.attach(html_part)
+
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
             smtp.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
@@ -657,22 +716,12 @@ if __name__ == "__main__":
 
     header_block = f"{market_note}\n{market_block}" if market_note else market_block
 
-    full_message = f"""데일리 브리프 — {date_str} KST
-{DIVIDER}
+    tg_message = build_telegram_message(date_str, header_block, us_summary, kr_summary)
+    email_body = build_email_body(date_str, header_block, us_summary, kr_summary)
 
-{header_block}
+    send_telegram(tg_message)
 
-{DIVIDER}
-🇺🇸 미국 증시 시황
-{DIVIDER}
-{us_summary}
-
-{DIVIDER}
-🇰🇷 한국 증시 시황
-{DIVIDER}
-{kr_summary}"""
-
-    send_telegram(full_message)
     email_subject = f"[데일리 브리프] {date_str}"
-    send_email(email_subject, full_message)
+    send_email(email_subject, email_body)
+
     print("전송 완료")
